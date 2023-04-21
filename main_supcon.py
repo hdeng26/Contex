@@ -356,7 +356,7 @@ def main():
     if opt.resume and os.path.exists(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location='cpu')
         init_epoch = ckpt['epoch']
-        optimizer = ckpt['optimizer']
+        optimizer.load_state_dict(ckpt['optimizer'])
         opt = ckpt['opt']
         best_loss = ckpt['loss']
     # tensorboard
@@ -388,12 +388,12 @@ def main():
         elif epoch % opt.save_freq == 0:
             save_file = os.path.join(
                 opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
-            save_model(model, optimizer, opt, epoch, save_file)
+            save_model(model, optimizer, opt, epoch, loss, save_file)
 
     # save the last model
     save_file = os.path.join(
         opt.save_folder, 'last.pth')
-    save_model(model, optimizer, opt, opt.epochs, save_file)
+    save_model(model, optimizer, opt, opt.epochs, loss, save_file)
 
 
 if __name__ == '__main__':
