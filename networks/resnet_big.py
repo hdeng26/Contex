@@ -7,7 +7,7 @@ Adapted from: https://github.com/bearpaw/pytorch-classification
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from torchvision import models
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -41,7 +41,6 @@ class BasicBlock(nn.Module):
 
 class Bottleneck(nn.Module):
     expansion = 4
-
     def __init__(self, in_planes, planes, stride=1, is_last=False):
         super(Bottleneck, self).__init__()
         self.is_last = is_last
@@ -133,7 +132,8 @@ def resnet34(**kwargs):
 
 
 def resnet50(**kwargs):
-    return ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
+    res50 = models.resnet50(weights='DEFAULT')
+    return nn.Sequential(*list(res50.children())[:-1])#ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
 
 
 def resnet101(**kwargs):
@@ -164,7 +164,7 @@ class LinearBatchNorm(nn.Module):
 
 class SupConResNet(nn.Module):
     """backbone + projection head"""
-    def __init__(self, name='resnet50', head='mlp', feat_dim=128):
+    def __init__(self, name='resnet50', head='mlp', feat_dim=128): # changed to resnet 18
         super(SupConResNet, self).__init__()
         model_fun, dim_in = model_dict[name]
         self.encoder = model_fun()
@@ -182,7 +182,7 @@ class SupConResNet(nn.Module):
 
     def forward(self, x):
         feat = self.encoder(x)
-        feat = F.normalize(self.head(feat), dim=1)
+        feat = F.normalize(self.head(torch.squeeze(feat)), dim=1)
         return feat
 
 
