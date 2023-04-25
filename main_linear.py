@@ -123,12 +123,15 @@ def set_loader(opt):
     normalize = transforms.Normalize(mean=mean, std=std)
 
     train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
+        #transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
+        transforms.Resize(224, interpolation=transforms.InterpolationMode.NEAREST),
         transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(30),
         transforms.ToTensor(),
         normalize,
     ])
     val_transform = transforms.Compose([
+        transforms.Resize(224, interpolation=transforms.InterpolationMode.NEAREST),
         transforms.ToTensor(),
         normalize,
     ])
@@ -172,6 +175,10 @@ def set_loader(opt):
     return train_loader, val_loader
 def set_model(opt):
     model = SupConResNet(name=opt.model)
+    #if opt.size == 32:
+    #    resize_layer = torch.nn.UpsamplingNearest2d(scale_factor=7)
+    #    model = torch.nn.Sequential(resize_layer, model)
+
     criterion = torch.nn.CrossEntropyLoss()
 
     classifier = LinearClassifier(name=opt.model, num_classes=opt.n_cls)
