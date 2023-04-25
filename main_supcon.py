@@ -169,7 +169,7 @@ def set_loader(opt):
 
     train_transform = transforms.Compose([
         #transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
-        transforms.Resize(224, interpolation=transforms.InterpolationMode.NEAREST),
+        transforms.Resize(224),
         transforms.RandomHorizontalFlip(),
         transforms.RandomApply([
             transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
