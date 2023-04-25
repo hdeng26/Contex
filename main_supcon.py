@@ -30,11 +30,11 @@ import torch.distributed as dist
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-try:
-    import apex
-    from apex import amp, optimizers
-except ImportError:
-    pass
+#try:
+#    import apex
+#    from apex import amp, optimizers
+#except ImportError:
+#    pass
 
 
 def parse_option():
@@ -297,7 +297,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         warmup_learning_rate(opt, epoch, idx, len(train_loader), optimizer)
 
         # compute loss
-        with torch.cuda.amp.autocast(enabled=opt.amp, dtype=torch.float16):
+        with torch.cuda.amp.autocast(enabled=opt.amp):
             features = model(images)
             # TODO: change to 4 features
             f1, f2 = torch.split(features, [bsz, bsz], dim=0)
