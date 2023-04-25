@@ -17,16 +17,16 @@ from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet
 from losses import SupConLoss0, SupConLoss1, SupConLoss2, SupConTupletLoss
 
-from torch.nn.parallel import DistributedDataParallel as DDP
+#from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 
-from torch.distributed.fsdp import (
-   FullyShardedDataParallel,
-   CPUOffload,
-)
-from torch.distributed.fsdp.wrap import (
-   size_based_auto_wrap_policy,
-)
+#from torch.distributed.fsdp import (
+#   FullyShardedDataParallel,
+#   CPUOffload,
+#)
+#from torch.distributed.fsdp.wrap import (
+#   size_based_auto_wrap_policy,
+#)
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
