@@ -126,7 +126,6 @@ def set_loader(opt):
         transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
         #transforms.Resize(224),
         transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(30),
         transforms.ToTensor(),
         normalize,
     ])
@@ -285,7 +284,10 @@ def validate(val_loader, model, classifier, criterion, opt):
             bsz = labels.shape[0]
 
             # forward
-            output = classifier(torch.squeeze(model.encoder(images)))
+            if opt.model == "resnet50t4" or opt.model == "resnet101t4":
+                output = classifier(model.encoder(images))
+            else:
+                output = classifier(torch.squeeze(model.encoder(images)))
             loss = criterion(output, labels)
 
             # update metric

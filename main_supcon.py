@@ -52,7 +52,7 @@ def parse_option():
                         help='number of training epochs')
 
     # training efficiency
-    parser.add_argument('--amp', type=bool, default=True,
+    parser.add_argument('--amp', action='store_true',
                         help='Automatic Mixed Precision')
 
     # optimization
@@ -80,7 +80,7 @@ def parse_option():
 
     # method
     parser.add_argument('--load_ckpt', type=str, default=None, help='pretrained checkpoint')
-    parser.add_argument('--resume', type=bool, default=True, help='choose to load from ckpt or not')
+    parser.add_argument('--resume', action='store_true', help='choose to load from ckpt or not')
     parser.add_argument('--method', type=str, default='SupCon',
                         choices=['SupCon', 'SimCLR'], help='choose method')
 
