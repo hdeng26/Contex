@@ -140,6 +140,10 @@ def resnet50t4(**kwargs):
     return ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
 
 def resnet101(**kwargs):
+    res101 = models.resnet101(pretrained=False)
+    return nn.Sequential(*list(res101.children())[:-1])
+
+def resnet101t4(**kwargs):
     return ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
 
 
@@ -149,6 +153,7 @@ model_dict = {
     'resnet50': [resnet50, 2048],
     'resnet50t4': [resnet50t4, 2048],
     'resnet101': [resnet101, 2048],
+    'resnet101t4': [resnet101t4, 2048],
 }
 
 

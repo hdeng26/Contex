@@ -11,49 +11,32 @@ import torch
 import torch.backends.cudnn as cudnn
 from torchvision import transforms, datasets
 
-from util import TwoCropTransform, AverageMeter, QuadCropTransform
+from util import TwoCropTransform, AverageMeter
 from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet
-from losses import SupConLoss0, SupConLoss1, SupConLoss2, SupConTupletLoss
+from losses import SupConLoss
 
-#from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.distributed as dist
-
-#from torch.distributed.fsdp import (
-#   FullyShardedDataParallel,
-#   CPUOffload,
-#)
-#from torch.distributed.fsdp.wrap import (
-#   size_based_auto_wrap_policy,
-#)
-from PIL import Image, ImageFile
-ImageFile.LOAD_TRUNCATED_IMAGES = True
-
-#try:
-#    import apex
-#    from apex import amp, optimizers
-#except ImportError:
-#    pass
+try:
+    import apex
+    from apex import amp, optimizers
+except ImportError:
+    pass
 
 
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
 
-    parser.add_argument('--print_freq', type=int, default=5,
+    parser.add_argument('--print_freq', type=int, default=10,
                         help='print frequency')
-    parser.add_argument('--save_freq', type=int, default=10,
+    parser.add_argument('--save_freq', type=int, default=50,
                         help='save frequency')
-    parser.add_argument('--batch_size', type=int, default=1024,
+    parser.add_argument('--batch_size', type=int, default=256,
                         help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=12,
+    parser.add_argument('--num_workers', type=int, default=16,
                         help='num of workers to use')
     parser.add_argument('--epochs', type=int, default=1000,
                         help='number of training epochs')
-
-    # training efficiency
-    parser.add_argument('--amp', type=bool, default=True,
-                        help='Automatic Mixed Precision')
 
     # optimization
     parser.add_argument('--learning_rate', type=float, default=0.05,
@@ -66,8 +49,6 @@ def parse_option():
                         help='weight decay')
     parser.add_argument('--momentum', type=float, default=0.9,
                         help='momentum')
-    parser.add_argument('--loss_type', type=int, default=0,
-                        help='loss function to use')
 
     # model dataset
     parser.add_argument('--model', type=str, default='resnet50')
@@ -79,8 +60,6 @@ def parse_option():
     parser.add_argument('--size', type=int, default=32, help='parameter for RandomResizedCrop')
 
     # method
-    parser.add_argument('--load_ckpt', type=str, default=None, help='pretrained checkpoint')
-    parser.add_argument('--resume', type=bool, default=True, help='choose to load from ckpt or not')
     parser.add_argument('--method', type=str, default='SupCon',
                         choices=['SupCon', 'SimCLR'], help='choose method')
 
@@ -102,24 +81,24 @@ def parse_option():
 
     # check if dataset is path that passed required arguments
     if opt.dataset == 'path':
-        assert opt.data_folder is not None
-            #and opt.mean is not None \
-            #and opt.std is not None
+        assert opt.data_folder is not None \
+            and opt.mean is not None \
+            and opt.std is not None
 
     # set the path according to the environment
     if opt.data_folder is None:
         opt.data_folder = './datasets/'
-    opt.model_path = '../ckpts/SupCON/{}_models'.format(opt.dataset)
-    opt.tb_path = '../ckpts/SupCON/{}_tensorboard'.format(opt.dataset)
+    opt.model_path = './save/SupCon/{}_models'.format(opt.dataset)
+    opt.tb_path = './save/SupCon/{}_tensorboard'.format(opt.dataset)
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
     for it in iterations:
         opt.lr_decay_epochs.append(int(it))
 
-    opt.model_name = '{}_{}_{}_lr_{}_loss_{}_decay_{}_bsz_{}_epoch{}_temp_{}_trial_{}'.\
-        format(opt.method, opt.dataset, opt.model, opt.learning_rate, opt.loss_type,
-               opt.weight_decay, opt.batch_size, opt.epochs, opt.temp, opt.trial)
+    opt.model_name = '{}_{}_{}_lr_{}_decay_{}_bsz_{}_temp_{}_trial_{}'.\
+        format(opt.method, opt.dataset, opt.model, opt.learning_rate,
+               opt.weight_decay, opt.batch_size, opt.temp, opt.trial)
 
     if opt.cosine:
         opt.model_name = '{}_cosine'.format(opt.model_name)
@@ -158,18 +137,14 @@ def set_loader(opt):
         mean = (0.5071, 0.4867, 0.4408)
         std = (0.2675, 0.2565, 0.2761)
     elif opt.dataset == 'path':
-        # use imagenet std mean instead
-        mean = (0.485, 0.456, 0.406)
-        std = (0.229, 0.224, 0.225)
-        #mean = eval(opt.mean)
-        #std = eval(opt.std)
+        mean = eval(opt.mean)
+        std = eval(opt.std)
     else:
         raise ValueError('dataset not supported: {}'.format(opt.dataset))
     normalize = transforms.Normalize(mean=mean, std=std)
 
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
-        #transforms.Resize(224),
         transforms.RandomHorizontalFlip(),
         transforms.RandomApply([
             transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
@@ -183,7 +158,7 @@ def set_loader(opt):
         train_dataset = datasets.CIFAR10(root=opt.data_folder,
                                          transform=TwoCropTransform(train_transform),
                                          download=True)
-    elif opt.dataset == 'cifar100': #TODO: change to quad transform and compare
+    elif opt.dataset == 'cifar100':
         train_dataset = datasets.CIFAR100(root=opt.data_folder,
                                           transform=TwoCropTransform(train_transform),
                                           download=True)
@@ -203,79 +178,26 @@ def set_loader(opt):
 
 def set_model(opt):
     model = SupConResNet(name=opt.model)
+    criterion = SupConLoss(temperature=opt.temp)
 
-    if opt.loss_type == 0:
-        criterion = SupConLoss0(temperature=opt.temp)
-    elif opt.loss_type == 1:
-        criterion = SupConLoss1(temperature=opt.temp)
-    elif opt.loss_type == 2:
-        criterion = SupConLoss2(temperature=opt.temp)
-    elif opt.loss_type == -1:
-        criterion = SupConTupletLoss(temperature=opt.temp)
-    else:
-        print("Error finding loss function\n")
     # enable synchronized Batch Normalization
     if opt.syncBN:
         model = apex.parallel.convert_syncbn_model(model)
 
-    # check for resume check point
-    ckpt_path = os.path.join(opt.save_folder, 'best.pth')
-    if opt.resume and os.path.exists(ckpt_path):
-        # use resume ckpt instead
-        opt.load_ckpt = ckpt_path
-
-    if opt.load_ckpt is not None:
-        ckpt = torch.load(opt.load_ckpt, map_location='cpu')
-        state_dict = ckpt['model']
-        if torch.cuda.is_available():
-            if torch.cuda.device_count() > 1:
-                model.encoder = torch.nn.DataParallel(model.encoder)
-            else:
-                new_state_dict = {}
-                for k, v in state_dict.items():
-                    k = k.replace("module.", "")
-                    new_state_dict[k] = v
-                state_dict = new_state_dict
-            #if torch.cuda.device_count() > 1:
-            #    model.encoder = torch.nn.DataParallel(model.encoder)
-            model = model.cuda()
-            criterion = criterion.cuda()
-            cudnn.benchmark = True
-            model.load_state_dict(state_dict)
-    else:
-        if torch.cuda.is_available():
-            # DDP
-            #dist.init_process_group("nccl")
-            #rank = dist.get_rank()
-            #device_id = rank % torch.cuda.device_count()
-            #model = model.to(device_id)
-            #criterion = criterion.to(device_id)
-            #model.encoder = DDP(model.encoder, device_ids=[device_id])
-            #model.encoder = torch.nn.parallel.DistributedDataParallel(model.encoder)
-            # TODO: add pytorch 2.0 Torch.Compile
-            # TODO: use fsdp to speed up the training
-            #fsdp_model = FullyShardedDataParallel(
-            #    SupConResNet(name=opt.model),
-            #    cpu_offload=CPUOffload(offload_params=True),
-            #)
-            if torch.cuda.device_count() > 1:
-                model.encoder = torch.nn.DataParallel(model.encoder)
-            model = model.cuda()
-            criterion = criterion.cuda()
-            cudnn.benchmark = True
+    if torch.cuda.is_available():
+        if torch.cuda.device_count() > 1:
+            model.encoder = torch.nn.DataParallel(model.encoder)
+        model = model.cuda()
+        criterion = criterion.cuda()
+        cudnn.benchmark = True
 
     return model, criterion
 
 
 def train(train_loader, model, criterion, optimizer, epoch, opt):
     """one epoch training"""
-
-    #DDP
-    #rank = dist.get_rank()
-    #device_id = rank % torch.cuda.device_count()
-
     model.train()
-    scaler = torch.cuda.amp.GradScaler(enabled=opt.amp)
+
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -286,9 +208,6 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
 
         images = torch.cat([images[0], images[1]], dim=0)
         if torch.cuda.is_available():
-            #ddp
-            #images = images.to(device_id)
-            #labels = labels.to(device_id)
             images = images.cuda(non_blocking=True)
             labels = labels.cuda(non_blocking=True)
         bsz = labels.shape[0]
@@ -297,27 +216,25 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         warmup_learning_rate(opt, epoch, idx, len(train_loader), optimizer)
 
         # compute loss
-        with torch.cuda.amp.autocast(enabled=opt.amp):
-            features = model(images)
-            # TODO: change to 4 features
-            f1, f2 = torch.split(features, [bsz, bsz], dim=0)
-            features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
-            if opt.method == 'SupCon':
-                loss = criterion(features, labels)
-            elif opt.method == 'SimCLR':
-                loss = criterion(features)
-            else:
-                raise ValueError('contrastive method not supported: {}'.
-                                 format(opt.method))
+        features = model(images)
+        f1, f2 = torch.split(features, [bsz, bsz], dim=0)
+        features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
+        if opt.method == 'SupCon':
+            loss = criterion(features, labels)
+        elif opt.method == 'SimCLR':
+            loss = criterion(features)
+        else:
+            raise ValueError('contrastive method not supported: {}'.
+                             format(opt.method))
 
         # update metric
         losses.update(loss.item(), bsz)
 
         # SGD
         optimizer.zero_grad()
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        loss.backward()
+        optimizer.step()
+
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
@@ -336,9 +253,6 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
 
 
 def main():
-    print("wait: free the last job memory")
-    #time.sleep(30)
-
     opt = parse_option()
 
     # build data loader
@@ -347,25 +261,14 @@ def main():
     # build model and criterion
     model, criterion = set_model(opt)
 
-
     # build optimizer
     optimizer = set_optimizer(opt, model)
-    init_epoch = 1
-    best_loss = 100
 
-    ckpt_path = os.path.join(opt.save_folder, 'best.pth')
-    if opt.resume and os.path.exists(ckpt_path):
-        ckpt = torch.load(ckpt_path, map_location='cpu')
-        init_epoch = ckpt['epoch']
-        optimizer.load_state_dict(ckpt['optimizer'])
-        opt = ckpt['opt']
-        best_loss = ckpt['loss']
     # tensorboard
     logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
 
-
     # training routine
-    for epoch in range(init_epoch, opt.epochs + 1):
+    for epoch in range(1, opt.epochs + 1):
         adjust_learning_rate(opt, optimizer, epoch)
 
         # train for one epoch
@@ -378,23 +281,15 @@ def main():
         logger.log_value('loss', loss, epoch)
         logger.log_value('learning_rate', optimizer.param_groups[0]['lr'], epoch)
 
-        if opt.resume:
-            if loss < best_loss:
-                # save the best model
-                save_file = os.path.join(
-                    opt.save_folder, 'best.pth')
-                save_model(model, optimizer, opt, epoch, loss, save_file)
-                best_loss = loss
-
-        elif epoch % opt.save_freq == 0:
+        if epoch % opt.save_freq == 0:
             save_file = os.path.join(
                 opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
-            save_model(model, optimizer, opt, epoch, loss, save_file)
+            save_model(model, optimizer, opt, epoch, save_file)
 
     # save the last model
     save_file = os.path.join(
         opt.save_folder, 'last.pth')
-    save_model(model, optimizer, opt, opt.epochs, loss, save_file)
+    save_model(model, optimizer, opt, opt.epochs, save_file)
 
 
 if __name__ == '__main__':

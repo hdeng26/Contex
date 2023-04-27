@@ -4,19 +4,16 @@ import sys
 import argparse
 import time
 import math
-import os
-import tensorboard_logger as tb_logger
+
 import torch
 import torch.backends.cudnn as cudnn
-from torchvision import transforms, datasets
+
+from main_ce import set_loader
 from util import AverageMeter
 from util import adjust_learning_rate, warmup_learning_rate, accuracy
 from util import set_optimizer
 from networks.resnet_big import SupConResNet, LinearClassifier
-from torch.utils.tensorboard import SummaryWriter
 
-from PIL import Image, ImageFile
-ImageFile.LOAD_TRUNCATED_IMAGES = True
 try:
     import apex
     from apex import amp, optimizers
@@ -29,7 +26,7 @@ def parse_option():
 
     parser.add_argument('--print_freq', type=int, default=10,
                         help='print frequency')
-    parser.add_argument('--save_freq', type=int, default=10,
+    parser.add_argument('--save_freq', type=int, default=50,
                         help='save frequency')
     parser.add_argument('--batch_size', type=int, default=256,
                         help='batch_size')
@@ -53,9 +50,8 @@ def parse_option():
     # model dataset
     parser.add_argument('--model', type=str, default='resnet50')
     parser.add_argument('--dataset', type=str, default='cifar10',
-                        choices=['cifar10', 'cifar100','path'], help='dataset')
-    parser.add_argument('--data_folder', type=str, default='./datasets/', help='path to custom dataset')
-    parser.add_argument('--size', type=int, default=32, help='parameter for RandomResizedCrop')
+                        choices=['cifar10', 'cifar100'], help='dataset')
+
     # other setting
     parser.add_argument('--cosine', action='store_true',
                         help='using cosine annealing')
@@ -64,13 +60,12 @@ def parse_option():
 
     parser.add_argument('--ckpt', type=str, default='',
                         help='path to pre-trained model')
-    parser.add_argument('--finetune_whole', type=bool, default=False,
-                        help='liner or whole network')
+
     opt = parser.parse_args()
 
-    tb_dir = "tensorboard_" + opt.dataset
-    opt.tb_folder = os.path.join(opt.ckpt, tb_dir)
-    opt.ckpt = opt.ckpt + "last.pth"
+    # set the path according to the environment
+    opt.data_folder = './datasets/'
+
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
     for it in iterations:
@@ -99,86 +94,14 @@ def parse_option():
         opt.n_cls = 10
     elif opt.dataset == 'cifar100':
         opt.n_cls = 100
-    elif opt.dataset == 'path':
-        opt.n_cls = 1000
     else:
         raise ValueError('dataset not supported: {}'.format(opt.dataset))
 
     return opt
 
-def set_loader(opt):
-    # construct data loader
-    if opt.dataset == 'cifar10':
-        mean = (0.4914, 0.4822, 0.4465)
-        std = (0.2023, 0.1994, 0.2010)
-    elif opt.dataset == 'cifar100':
-        mean = (0.5071, 0.4867, 0.4408)
-        std = (0.2675, 0.2565, 0.2761)
-    elif opt.dataset == 'path':
-        # use imagenet std mean instead
-        mean = (0.485, 0.456, 0.406)
-        std = (0.229, 0.224, 0.225)
-    else:
-        raise ValueError('dataset not supported: {}'.format(opt.dataset))
-    normalize = transforms.Normalize(mean=mean, std=std)
 
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
-        #transforms.Resize(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(30),
-        transforms.ToTensor(),
-        normalize,
-    ])
-    val_transform = transforms.Compose([
-        #transforms.Resize(224, interpolation=transforms.InterpolationMode.NEAREST),
-        transforms.ToTensor(),
-        normalize,
-    ])
-    val_transform_imagenet = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(opt.size),
-        transforms.ToTensor(),
-        normalize,
-    ])
-
-    if opt.dataset == 'cifar10':
-        train_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                         transform=train_transform,
-                                         download=True)
-        val_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                       train=False,
-                                       transform=val_transform)
-    elif opt.dataset == 'cifar100':
-        train_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                          transform=train_transform,
-                                          download=True)
-        val_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                        train=False,
-                                        transform=val_transform)
-    elif opt.dataset == 'path':
-        train_dataset = datasets.ImageFolder(root=opt.data_folder+"Training_set",
-                                            transform=train_transform)
-        val_dataset = datasets.ImageFolder(root=opt.data_folder+"Validation_set",
-                                             transform=val_transform_imagenet)
-    else:
-        raise ValueError(opt.dataset)
-
-    train_sampler = None
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-        num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=256, shuffle=False,
-        num_workers=8, pin_memory=True)
-
-    return train_loader, val_loader
 def set_model(opt):
     model = SupConResNet(name=opt.model)
-    #if opt.size == 32:
-    #    resize_layer = torch.nn.UpsamplingNearest2d(scale_factor=7)
-    #    model = torch.nn.Sequential(resize_layer, model)
-
     criterion = torch.nn.CrossEntropyLoss()
 
     classifier = LinearClassifier(name=opt.model, num_classes=opt.n_cls)
@@ -207,10 +130,7 @@ def set_model(opt):
 
 def train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
     """one epoch training"""
-    if opt.finetune_whole == True:
-        model.train()
-    else:
-        model.eval()
+    model.eval()
     classifier.train()
 
     batch_time = AverageMeter()
@@ -232,11 +152,7 @@ def train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
         # compute loss
         with torch.no_grad():
             features = model.encoder(images)
-
-        if opt.model == "resnet50t4" or opt.model == "resnet101t4":
-            output = classifier(features.detach())
-        else:
-            output = classifier(torch.squeeze(features.detach()))
+        output = classifier(features.detach())
         loss = criterion(output, labels)
 
         # update metric
@@ -275,7 +191,6 @@ def validate(val_loader, model, classifier, criterion, opt):
     batch_time = AverageMeter()
     losses = AverageMeter()
     top1 = AverageMeter()
-    top5 = AverageMeter()
 
     with torch.no_grad():
         end = time.time()
@@ -285,14 +200,13 @@ def validate(val_loader, model, classifier, criterion, opt):
             bsz = labels.shape[0]
 
             # forward
-            output = classifier(torch.squeeze(model.encoder(images)))
+            output = classifier(model.encoder(images))
             loss = criterion(output, labels)
 
             # update metric
             losses.update(loss.item(), bsz)
             acc1, acc5 = accuracy(output, labels, topk=(1, 5))
             top1.update(acc1[0], bsz)
-            top5.update(acc5[0], bsz)
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -307,22 +221,18 @@ def validate(val_loader, model, classifier, criterion, opt):
                        loss=losses, top1=top1))
 
     print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
-    return losses.avg, top1.avg, top5.avg
+    return losses.avg, top1.avg
 
 
 def main():
-    print("wait: free the last job memory")
-    time.sleep(30)
     best_acc = 0
     opt = parse_option()
-    logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
 
     # build data loader
     train_loader, val_loader = set_loader(opt)
 
     # build model and criterion
     model, classifier, criterion = set_model(opt)
-
 
     # build optimizer
     optimizer = set_optimizer(opt, classifier)
@@ -336,22 +246,13 @@ def main():
         loss, acc = train(train_loader, model, classifier, criterion,
                           optimizer, epoch, opt)
         time2 = time.time()
-
-        # tensorboard logger
-        logger.log_value('training loss', loss, epoch)
-        logger.log_value('learning_rate', optimizer.param_groups[0]['lr'], epoch)
-        logger.log_value('training accuracy', acc, epoch)
-
         print('Train epoch {}, total time {:.2f}, accuracy:{:.2f}'.format(
             epoch, time2 - time1, acc))
 
         # eval for one epoch
-        loss, val_top1, val_top5 = validate(val_loader, model, classifier, criterion, opt)
-        logger.log_value('testing loss', loss, epoch)
-        logger.log_value('testing top 1 accuracy', val_top1, epoch)
-        logger.log_value('testing top 5 accuracy', val_top5, epoch)
-        if val_top1 > best_acc:
-            best_acc = val_top1
+        loss, val_acc = validate(val_loader, model, classifier, criterion, opt)
+        if val_acc > best_acc:
+            best_acc = val_acc
 
     print('best accuracy: {:.2f}'.format(best_acc))
 
