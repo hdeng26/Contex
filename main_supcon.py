@@ -72,7 +72,7 @@ def parse_option():
     # model dataset
     parser.add_argument('--model', type=str, default='resnet50')
     parser.add_argument('--dataset', type=str, default='cifar10',
-                        choices=['cifar10', 'cifar100', 'path'], help='dataset')
+                        choices=['cifar10', 'cifar100', 'cars', 'food', 'path'], help='dataset')
     parser.add_argument('--mean', type=str, help='mean of dataset in path in form of str tuple')
     parser.add_argument('--std', type=str, help='std of dataset in path in form of str tuple')
     parser.add_argument('--data_folder', type=str, default=None, help='path to custom dataset')
@@ -157,6 +157,14 @@ def set_loader(opt):
     elif opt.dataset == 'cifar100':
         mean = (0.5071, 0.4867, 0.4408)
         std = (0.2675, 0.2565, 0.2761)
+    elif opt.dataset == 'cars':
+        # use imagenet std mean instead
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
+    elif opt.dataset == 'food':
+        # use imagenet std mean instead
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
     elif opt.dataset == 'path':
         # use imagenet std mean instead
         mean = (0.485, 0.456, 0.406)
@@ -185,6 +193,14 @@ def set_loader(opt):
                                          download=True)
     elif opt.dataset == 'cifar100': #TODO: change to quad transform and compare
         train_dataset = datasets.CIFAR100(root=opt.data_folder,
+                                          transform=TwoCropTransform(train_transform),
+                                          download=True)
+    elif opt.dataset == 'cars':
+        train_dataset = datasets.StanfordCars(root=opt.data_folder,
+                                          transform=TwoCropTransform(train_transform),
+                                          download=True)
+    elif opt.dataset == 'food':
+        train_dataset = datasets.Food101(root=opt.data_folder,
                                           transform=TwoCropTransform(train_transform),
                                           download=True)
     elif opt.dataset == 'path':
@@ -379,12 +395,12 @@ def main():
         logger.log_value('learning_rate', optimizer.param_groups[0]['lr'], epoch)
 
         if opt.resume:
-            if loss < best_loss:
-                # save the best model
-                save_file = os.path.join(
-                    opt.save_folder, 'best.pth')
-                save_model(model, optimizer, opt, epoch, loss, save_file)
-                best_loss = loss
+            #if loss < best_loss:
+            # save the best model
+            save_file = os.path.join(
+                opt.save_folder, 'best.pth')
+            save_model(model, optimizer, opt, epoch, loss, save_file)
+            best_loss = loss
 
         elif epoch % opt.save_freq == 0:
             save_file = os.path.join(

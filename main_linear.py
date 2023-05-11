@@ -8,13 +8,13 @@ import os
 import tensorboard_logger as tb_logger
 import torch
 import torch.backends.cudnn as cudnn
-from torchvision import transforms, datasets
+from torchvision import transforms, datasets, models
 from util import AverageMeter
-from util import adjust_learning_rate, warmup_learning_rate, accuracy
+from util import adjust_learning_rate, warmup_learning_rate, accuracy, accuracy_per_class
 from util import set_optimizer
 from networks.resnet_big import SupConResNet, LinearClassifier
 from torch.utils.tensorboard import SummaryWriter
-
+import torch.nn.functional as F
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 try:
@@ -33,7 +33,7 @@ def parse_option():
                         help='save frequency')
     parser.add_argument('--batch_size', type=int, default=256,
                         help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=16,
+    parser.add_argument('--num_workers', type=int, default=12,
                         help='num of workers to use')
     parser.add_argument('--epochs', type=int, default=100,
                         help='number of training epochs')
@@ -53,7 +53,7 @@ def parse_option():
     # model dataset
     parser.add_argument('--model', type=str, default='resnet50')
     parser.add_argument('--dataset', type=str, default='cifar10',
-                        choices=['cifar10', 'cifar100','path'], help='dataset')
+                        choices=['cifar10', 'cifar100', 'sun', 'food', 'DTD', 'caltech101', 'caltech256',  'path'], help='dataset')
     parser.add_argument('--data_folder', type=str, default='./datasets/', help='path to custom dataset')
     parser.add_argument('--size', type=int, default=32, help='parameter for RandomResizedCrop')
     # other setting
@@ -62,13 +62,15 @@ def parse_option():
     parser.add_argument('--warm', action='store_true',
                         help='warm-up for large batch training')
 
+    parser.add_argument('--acc_per_class', action='store_true',
+                        help='use mean per class accuracy')
     parser.add_argument('--ckpt', type=str, default='',
                         help='path to pre-trained model')
-    parser.add_argument('--finetune_whole', type=bool, default=False,
+    parser.add_argument('--finetune', action='store_true',
                         help='liner or whole network')
     opt = parser.parse_args()
 
-    tb_dir = "tensorboard_" + opt.dataset
+    tb_dir = "tensorboard_" + opt.data_folder + opt.dataset
     opt.tb_folder = os.path.join(opt.ckpt, tb_dir)
     opt.ckpt = opt.ckpt + "last.pth"
     iterations = opt.lr_decay_epochs.split(',')
@@ -99,6 +101,16 @@ def parse_option():
         opt.n_cls = 10
     elif opt.dataset == 'cifar100':
         opt.n_cls = 100
+    elif opt.dataset == 'sun':
+        opt.n_cls = 397
+    elif opt.dataset == 'DTD':
+        opt.n_cls = 47
+    elif opt.dataset == 'food':
+        opt.n_cls = 101
+    elif opt.dataset == 'caltech101':
+        opt.n_cls = 101
+    elif opt.dataset == 'caltech256':
+        opt.n_cls = 256
     elif opt.dataset == 'path':
         opt.n_cls = 1000
     else:
@@ -114,26 +126,34 @@ def set_loader(opt):
     elif opt.dataset == 'cifar100':
         mean = (0.5071, 0.4867, 0.4408)
         std = (0.2675, 0.2565, 0.2761)
-    elif opt.dataset == 'path':
-        # use imagenet std mean instead
+    else:
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
-    else:
-        raise ValueError('dataset not supported: {}'.format(opt.dataset))
     normalize = transforms.Normalize(mean=mean, std=std)
 
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
-        #transforms.Resize(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        normalize,
-    ])
-    val_transform = transforms.Compose([
-        #transforms.Resize(224, interpolation=transforms.InterpolationMode.NEAREST),
-        transforms.ToTensor(),
-        normalize,
-    ])
+    if opt.size == 32 and opt.finetune:
+        train_transform = transforms.Compose([
+            transforms.Resize(224),
+            transforms.RandomResizedCrop(224, scale=(0.2, 1.)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize, ])
+
+        val_transform = transforms.Compose([
+            transforms.Resize(224),
+            transforms.ToTensor(),
+            normalize, ])
+    else:
+        train_transform = transforms.Compose([
+            transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        val_transform = transforms.Compose([
+            transforms.ToTensor(),
+            normalize,
+        ])
     val_transform_imagenet = transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(opt.size),
@@ -155,6 +175,36 @@ def set_loader(opt):
         val_dataset = datasets.CIFAR100(root=opt.data_folder,
                                         train=False,
                                         transform=val_transform)
+    elif opt.dataset == 'sun':
+        train_dataset = datasets.SUN397(root=opt.data_folder,
+                                          transform=train_transform,
+                                          download=True)
+        val_dataset = datasets.StanfordCars(root=opt.data_folder,
+                                        transform=val_transform)
+    elif opt.dataset == 'food':
+        train_dataset = datasets.Food101(root=opt.data_folder,
+                                          transform=train_transform,
+                                          download=True)
+        val_dataset = datasets.Food101(root=opt.data_folder,
+                                        transform=val_transform)
+    elif opt.dataset == 'DTD':
+        train_dataset = datasets.DTD(root=opt.data_folder,
+                                          transform=train_transform,
+                                          download=True)
+        val_dataset = datasets.Food101(root=opt.data_folder,
+                                        transform=val_transform)
+    elif opt.dataset == 'caltech101':
+        train_dataset = datasets.Caltech101(root=opt.data_folder,
+                                          transform=train_transform,
+                                          download=True)
+        val_dataset = datasets.Caltech101(root=opt.data_folder,
+                                        transform=val_transform)
+    elif opt.dataset == 'caltech256':
+        train_dataset = datasets.Caltech256(root=opt.data_folder,
+                                          transform=train_transform,
+                                          download=True)
+        val_dataset = datasets.Caltech256(root=opt.data_folder,
+                                        transform=val_transform)
     elif opt.dataset == 'path':
         train_dataset = datasets.ImageFolder(root=opt.data_folder+"Training_set",
                                             transform=train_transform)
@@ -172,11 +222,22 @@ def set_loader(opt):
         num_workers=8, pin_memory=True)
 
     return train_loader, val_loader
+
+class cifar10Resnet50(torch.nn.Module):
+    def __init__(self, opt):
+        super(cifar10Resnet50, self).__init__()
+        self.upsample = torch.nn.Upsample(scale_factor=7)
+        self.encoder = SupConResNet(name=opt.model).encoder
+        self.head = SupConResNet(name=opt.model).head
+    def forward(self, x):
+        x = self.upsample(x)
+        x = self.encoder(x)
+        x = torch.nn.functional.normalize(self.head(torch.squeeze(x)), dim=1)
+        return x
+
+
 def set_model(opt):
     model = SupConResNet(name=opt.model)
-    #if opt.size == 32:
-    #    resize_layer = torch.nn.UpsamplingNearest2d(scale_factor=7)
-    #    model = torch.nn.Sequential(resize_layer, model)
 
     criterion = torch.nn.CrossEntropyLoss()
 
@@ -185,7 +246,31 @@ def set_model(opt):
     ckpt = torch.load(opt.ckpt, map_location='cpu')
     state_dict = ckpt['model']
 
-    if torch.cuda.is_available():
+    # adjust for cifar
+    if False and opt.size == 32 and opt.model == 'resnet50':
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            k = k.replace("module.", "")
+            new_state_dict[k] = v
+        state_dict = new_state_dict
+        model = model.cuda()
+        classifier = classifier.cuda()
+        criterion = criterion.cuda()
+        cudnn.benchmark = True
+        model.load_state_dict(state_dict)
+
+        #debug weights
+        # res50 = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        # model.encoder = torch.nn.Sequential(*list(res50.children())[:-1])
+
+        model.encoder[0] = torch.nn.Conv2d(3, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+        del model.encoder[3]
+        if torch.cuda.device_count() > 1:
+            model.encoder = torch.nn.DataParallel(model.encoder)
+        cudnn.benchmark = True
+        model = model.cuda()
+
+    elif torch.cuda.is_available():
         if torch.cuda.device_count() > 1:
             model.encoder = torch.nn.DataParallel(model.encoder)
         else:
@@ -198,19 +283,21 @@ def set_model(opt):
         classifier = classifier.cuda()
         criterion = criterion.cuda()
         cudnn.benchmark = True
-
         model.load_state_dict(state_dict)
+
 
     return model, classifier, criterion
 
 
 def train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
     """one epoch training"""
-    if opt.finetune_whole == True:
+    if opt.finetune == True:
         model.train()
     else:
         model.eval()
     classifier.train()
+
+    model.encoder.requires_grad = True
 
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -229,13 +316,17 @@ def train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
         warmup_learning_rate(opt, epoch, idx, len(train_loader), optimizer)
 
         # compute loss
-        with torch.no_grad():
+        if opt.finetune:
             features = model.encoder(images)
+            output = classifier(torch.squeeze(features))
 
-        if opt.model == "resnet50t4" or opt.model == "resnet101t4":
-            output = classifier(features.detach())
         else:
-            output = classifier(torch.squeeze(features.detach()))
+            with torch.no_grad():
+                features = model.encoder(images)
+            if opt.model == "resnet50t4" or opt.model == "resnet101t4":
+                output = classifier(features.detach())
+            else:
+                output = classifier(torch.squeeze(features.detach()))
         loss = criterion(output, labels)
 
         # update metric
@@ -277,6 +368,9 @@ def validate(val_loader, model, classifier, criterion, opt):
     top5 = AverageMeter()
 
     with torch.no_grad():
+        if opt.acc_per_class:
+            correct_all = torch.zeros(opt.n_cls).cuda()
+            total_all = torch.zeros(opt.n_cls).cuda()
         end = time.time()
         for idx, (images, labels) in enumerate(val_loader):
             images = images.float().cuda()
@@ -292,9 +386,16 @@ def validate(val_loader, model, classifier, criterion, opt):
 
             # update metric
             losses.update(loss.item(), bsz)
-            acc1, acc5 = accuracy(output, labels, topk=(1, 5))
-            top1.update(acc1[0], bsz)
-            top5.update(acc5[0], bsz)
+            if opt.acc_per_class:
+                correct, total = accuracy_per_class(output, labels, opt.n_cls ,topk=(1,))
+                correct_all += correct
+                total_all += total
+                topOne = torch.mean(correct[total != 0]/total[total != 0])*100
+                top1.update(topOne, bsz)
+            else:
+                acc1, acc5 = accuracy(output, labels, topk=(1, 5))
+                top1.update(acc1[0], bsz)
+                top5.update(acc5[0], bsz)
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -307,14 +408,14 @@ def validate(val_loader, model, classifier, criterion, opt):
                       'Acc@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                        idx, len(val_loader), batch_time=batch_time,
                        loss=losses, top1=top1))
-
-    print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
+    top1_all = torch.mean(correct_all[total_all != 0] / total_all[total_all != 0])*100
+    print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
     return losses.avg, top1.avg, top5.avg
 
 
 def main():
     print("wait: free the last job memory")
-    time.sleep(30)
+    #time.sleep(30)
     best_acc = 0
     opt = parse_option()
     logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)

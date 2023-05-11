@@ -39,7 +39,20 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
+def accuracy_per_class(output, target, n_cls, topk=(1,)):
+    with torch.no_grad():
+        maxk = max(topk)
+        batch_size = target.size(0)
+        _, preds = output.topk(maxk, 1, True, True)
+        correct = torch.zeros(n_cls).cuda()
+        total = torch.zeros(n_cls).cuda()
+        class_acc = torch.zeros(n_cls).cuda()
+        preds = torch.squeeze(preds).cuda()
+        for i in range(batch_size):
+            correct[target[i]] += (preds[i] == target[i])
+            total[target[i]] += 1
 
+    return correct, total
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
     with torch.no_grad():
