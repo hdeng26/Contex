@@ -88,7 +88,6 @@ class SupConLoss0(nn.Module):
         # compute log_prob, use exp to range negative logits to [0,1]
         exp_logits = torch.exp(logits) * logits_self_mask # not add all postive pairs
 
-        # logit - log(exp(logit).sum) it is MSE in MLE???
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
 
         # compute mean of log-likelihood over positive
@@ -434,7 +433,7 @@ class SupConTupletLoss2(nn.Module):
     It also supports the unsupervised contrastive loss in SimCLR"""
     def __init__(self, temperature=0.07, contrast_mode='all',
                  base_temperature=0.07):
-        super(SupConTupletLoss, self).__init__()
+        super(SupConTupletLoss2, self).__init__()
         self.temperature = temperature
         self.contrast_mode = contrast_mode
         self.base_temperature = base_temperature
@@ -512,8 +511,8 @@ class SupConTupletLoss2(nn.Module):
         # loss 1
 
         exp_logits = torch.exp(logits) * logits_mask # add all positive pairs
-
-        log_prob = torch.log(1+(exp_logits.sum(1, keepdim=True)).expand_as(exp_logits)-torch.exp(logits))
+        neg_label_logits = (exp_logits.sum(1, keepdim=True)).expand_as(exp_logits)
+        log_prob = torch.log(1+neg_label_logits) - logits
         # compute mean of log-likelihood over positive
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
 
@@ -543,4 +542,4 @@ class SupConTupletLoss2(nn.Module):
         loss3 = torch.log(torch.exp(triplet_loss+mean_log_prob_pos)).mean() * (self.temperature / self.base_temperature)
         loss4 = (triplet_loss + mean_log_prob_pos).mean() * (self.temperature / self.base_temperature)
         loss5 = torch.log((torch.exp(triplet_loss)*torch.exp(mean_log_prob_pos)).sum()).mean() * (self.temperature / self.base_temperature)
-        return loss5
+        return loss2

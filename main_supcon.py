@@ -15,7 +15,7 @@ from util import TwoCropTransform, AverageMeter, QuadCropTransform
 from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet
-from losses import SupConLoss0, SupConLoss1, SupConLoss2, SupConTupletLoss
+from losses import SupConLoss0, SupConLoss1, SupConLoss2, SupConTupletLoss, SupConTupletLoss2
 
 #from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
@@ -227,7 +227,7 @@ def set_model(opt):
     elif opt.loss_type == 2:
         criterion = SupConLoss2(temperature=opt.temp)
     elif opt.loss_type == -1:
-        criterion = SupConTupletLoss(temperature=opt.temp)
+        criterion = SupConTupletLoss2(temperature=opt.temp)
     else:
         print("Error finding loss function\n")
     # enable synchronized Batch Normalization

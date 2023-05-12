@@ -393,7 +393,7 @@ def main():
 
         # train for one epoch
         time1 = time.time()
-        loss = train(val_loader, model, criterion, optimizer, epoch, opt)
+        loss = train(train_loader, model, criterion, optimizer, epoch, opt)
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
