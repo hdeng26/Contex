@@ -408,8 +408,9 @@ def validate(val_loader, model, classifier, criterion, opt):
                       'Acc@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                        idx, len(val_loader), batch_time=batch_time,
                        loss=losses, top1=top1))
-    top1_all = torch.mean(correct_all[total_all != 0] / total_all[total_all != 0])*100
-    print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
+    if opt.acc_per_class:
+        top1_all = torch.mean(correct_all[total_all != 0] / total_all[total_all != 0])*100
+        print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
     return losses.avg, top1.avg, top5.avg
 
 

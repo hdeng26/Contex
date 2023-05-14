@@ -538,7 +538,7 @@ class SupConTupletLoss2(nn.Module):
         loss_1 = (self.temperature / self.base_temperature) * mean_log_prob_pos
         loss = loss_1.view(anchor_count, batch_size).mean()*0.6 + triplet_loss.mean()*0.4
         # don't know why loss 3 will not go down, but loss 2 will
-        loss2 = torch.log(torch.exp(triplet_loss)*torch.exp(mean_log_prob_pos)).mean() * (self.temperature / self.base_temperature)
+        loss2 = torch.log(torch.exp(triplet_loss)*torch.exp(mean_log_prob_pos)).mean() * (self.temperature / self.base_temperature)*0.5
         loss3 = torch.log(torch.exp(triplet_loss+mean_log_prob_pos)).mean() * (self.temperature / self.base_temperature)
         loss4 = (triplet_loss + mean_log_prob_pos).mean() * (self.temperature / self.base_temperature)
         loss5 = torch.log((torch.exp(triplet_loss)*torch.exp(mean_log_prob_pos)).sum()).mean() * (self.temperature / self.base_temperature)
