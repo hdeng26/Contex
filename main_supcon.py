@@ -10,12 +10,12 @@ import tensorboard_logger as tb_logger
 import torch
 import torch.backends.cudnn as cudnn
 from torchvision import transforms, datasets
-
+from util import adjust_learning_rate, warmup_learning_rate, accuracy, accuracy_per_class
 from util import TwoCropTransform, AverageMeter, QuadCropTransform
 from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
-from networks.resnet_big import SupConResNet
-from losses import SupConLoss0, SupConLoss1, SupConLoss2, SupConTupletLoss, SupConTupletLoss2
+from networks.resnet_big import SupConResNet, LinearClassifier
+from losses import SupConLoss0, SupConLoss1, SupConLoss2, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3
 
 #from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
@@ -95,11 +95,30 @@ def parse_option():
                         help='using synchronized batch normalization')
     parser.add_argument('--warm', action='store_true',
                         help='warm-up for large batch training')
+    parser.add_argument('--acc_per_class', action='store_true',
+                        help='warm-up for large batch training')
     parser.add_argument('--trial', type=str, default='0',
                         help='id for recording multiple runs')
 
     opt = parser.parse_args()
-
+    if opt.dataset == 'cifar10':
+        opt.n_cls = 10
+    elif opt.dataset == 'cifar100':
+        opt.n_cls = 100
+    elif opt.dataset == 'sun':
+        opt.n_cls = 397
+    elif opt.dataset == 'DTD':
+        opt.n_cls = 47
+    elif opt.dataset == 'food':
+        opt.n_cls = 101
+    elif opt.dataset == 'caltech101':
+        opt.n_cls = 101
+    elif opt.dataset == 'caltech256':
+        opt.n_cls = 256
+    elif opt.dataset == 'path':
+        opt.n_cls = 1000
+    else:
+        raise ValueError('dataset not supported: {}'.format(opt.dataset))
     # check if dataset is path that passed required arguments
     if opt.dataset == 'path':
         assert opt.data_folder is not None
@@ -109,8 +128,8 @@ def parse_option():
     # set the path according to the environment
     if opt.data_folder is None:
         opt.data_folder = './datasets/'
-    opt.model_path = '../ckpts/SupCON/{}_models'.format(opt.dataset)
-    opt.tb_path = '../ckpts/SupCON/{}_tensorboard'.format(opt.dataset)
+    opt.model_path = '../ckpts/SupCON/supplementary/{}_models'.format(opt.dataset)
+    opt.tb_path = '../ckpts/SupCON/supplementary/{}_tensorboard'.format(opt.dataset)
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
@@ -186,15 +205,42 @@ def set_loader(opt):
         transforms.ToTensor(),
         normalize,
     ])
-
+    linear_train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        normalize,
+    ])
+    val_transform = transforms.Compose([
+        transforms.ToTensor(),
+        normalize,
+    ])
+    val_transform_imagenet = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(opt.size),
+        transforms.ToTensor(),
+        normalize,
+    ])
     if opt.dataset == 'cifar10':
         train_dataset = datasets.CIFAR10(root=opt.data_folder,
                                          transform=TwoCropTransform(train_transform),
                                          download=True)
+        linear_train_dataset = datasets.CIFAR10(root=opt.data_folder,
+                                         transform=linear_train_transform,
+                                         download=True)
+        val_dataset = datasets.CIFAR10(root=opt.data_folder,
+                                       train=False,
+                                       transform=val_transform)
     elif opt.dataset == 'cifar100': #TODO: change to quad transform and compare
         train_dataset = datasets.CIFAR100(root=opt.data_folder,
                                           transform=TwoCropTransform(train_transform),
                                           download=True)
+        linear_train_dataset = datasets.CIFAR100(root=opt.data_folder,
+                                                transform=linear_train_transform,
+                                                download=True)
+        val_dataset = datasets.CIFAR100(root=opt.data_folder,
+                                        train=False,
+                                        transform=val_transform)
     elif opt.dataset == 'cars':
         train_dataset = datasets.StanfordCars(root=opt.data_folder,
                                           transform=TwoCropTransform(train_transform),
@@ -206,6 +252,11 @@ def set_loader(opt):
     elif opt.dataset == 'path':
         train_dataset = datasets.ImageFolder(root=opt.data_folder,
                                             transform=TwoCropTransform(train_transform))
+        linear_train_dataset = datasets.ImageFolder(root=opt.data_folder,
+                                                transform=linear_train_transform,
+                                                download=True)
+        val_dataset = datasets.ImageFolder(root=opt.data_folder + "Validation_set",
+                                           transform=val_transform_imagenet)
     else:
         raise ValueError(opt.dataset)
 
@@ -213,26 +264,33 @@ def set_loader(opt):
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
         num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
-
-    return train_loader
+    linear_train_loader = torch.utils.data.DataLoader(
+        linear_train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+        num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=256, shuffle=False,
+        num_workers=8, pin_memory=True)
+    return train_loader, linear_train_loader, val_loader
 
 
 def set_model(opt):
     model = SupConResNet(name=opt.model)
-
+    linear_criterion = torch.nn.CrossEntropyLoss()
     if opt.loss_type == 0:
         criterion = SupConLoss0(temperature=opt.temp)
     elif opt.loss_type == 1:
         criterion = SupConLoss1(temperature=opt.temp)
-    elif opt.loss_type == 2:
-        criterion = SupConLoss2(temperature=opt.temp)
+    elif opt.loss_type == -2:
+        criterion = SupConTupletLoss3(temperature=opt.temp)
     elif opt.loss_type == -1:
-        criterion = SupConTupletLoss2(temperature=opt.temp)
+        criterion = SupConTupletLoss(temperature=opt.temp)
     else:
         print("Error finding loss function\n")
     # enable synchronized Batch Normalization
     if opt.syncBN:
         model = apex.parallel.convert_syncbn_model(model)
+
+    classifier = LinearClassifier(name=opt.model, num_classes=opt.n_cls)
 
     # check for resume check point
     ckpt_path = os.path.join(opt.save_folder, 'best.pth')
@@ -256,6 +314,7 @@ def set_model(opt):
             #    model.encoder = torch.nn.DataParallel(model.encoder)
             model = model.cuda()
             criterion = criterion.cuda()
+            classifier = classifier.cuda()
             cudnn.benchmark = True
             model.load_state_dict(state_dict)
     else:
@@ -278,9 +337,10 @@ def set_model(opt):
                 model.encoder = torch.nn.DataParallel(model.encoder)
             model = model.cuda()
             criterion = criterion.cuda()
+            classifier = classifier.cuda()
             cudnn.benchmark = True
 
-    return model, criterion
+    return model, classifier, criterion, linear_criterion
 
 
 def train(train_loader, model, criterion, optimizer, epoch, opt):
@@ -350,22 +410,139 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
 
     return losses.avg
 
+def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
+    """one epoch training"""
+
+    model.eval()
+    classifier.train()
+
+    model.encoder.requires_grad = True
+
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+
+    end = time.time()
+    for idx, (images, labels) in enumerate(train_loader):
+        data_time.update(time.time() - end)
+        images = images.cuda(non_blocking=True)
+        labels = labels.cuda(non_blocking=True)
+        bsz = labels.shape[0]
+
+        # warm-up learning rate
+        warmup_learning_rate(opt, epoch, idx, len(train_loader), optimizer)
+
+        # compute loss
+        with torch.no_grad():
+            features = model.encoder(images)
+        if opt.model == "resnet50t4" or opt.model == "resnet101t4":
+            output = classifier(features.detach())
+        else:
+            output = classifier(torch.squeeze(features.detach()))
+        loss = criterion(output, labels)
+
+        # update metric
+        losses.update(loss.item(), bsz)
+        acc1, acc5 = accuracy(output, labels, topk=(1, 5))
+        top1.update(acc1[0], bsz)
+
+        # SGD
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        # print info
+        if (idx + 1) % opt.print_freq == 0:
+            print('Train: [{0}][{1}/{2}]\t'
+                  'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                  'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                  'loss {loss.val:.3f} ({loss.avg:.3f})\t'
+                  'Acc@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
+                   epoch, idx + 1, len(train_loader), batch_time=batch_time,
+                   data_time=data_time, loss=losses, top1=top1))
+            sys.stdout.flush()
+
+    return losses.avg, top1.avg
+
+
+def linear_validate(val_loader, model, classifier, criterion, opt):
+    """validation"""
+    model.eval()
+    classifier.eval()
+
+    batch_time = AverageMeter()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    top5 = AverageMeter()
+
+    with torch.no_grad():
+        if opt.acc_per_class:
+            correct_all = torch.zeros(opt.n_cls).cuda()
+            total_all = torch.zeros(opt.n_cls).cuda()
+        end = time.time()
+        for idx, (images, labels) in enumerate(val_loader):
+            images = images.float().cuda()
+            labels = labels.cuda()
+            bsz = labels.shape[0]
+
+            # forward
+            if opt.model == "resnet50t4" or opt.model == "resnet101t4":
+                output = classifier(model.encoder(images))
+            else:
+                output = classifier(torch.squeeze(model.encoder(images)))
+            loss = criterion(output, labels)
+
+            # update metric
+            losses.update(loss.item(), bsz)
+            if opt.acc_per_class:
+                correct, total = accuracy_per_class(output, labels, opt.n_cls ,topk=(1,))
+                correct_all += correct
+                total_all += total
+                topOne = torch.mean(correct[total != 0]/total[total != 0])*100
+                top1.update(topOne, bsz)
+            else:
+                acc1, acc5 = accuracy(output, labels, topk=(1, 5))
+                top1.update(acc1[0], bsz)
+                top5.update(acc5[0], bsz)
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            if idx % opt.print_freq == 0:
+                print('Test: [{0}/{1}]\t'
+                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                      'Acc@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
+                       idx, len(val_loader), batch_time=batch_time,
+                       loss=losses, top1=top1))
+    if opt.acc_per_class:
+        top1_all = torch.mean(correct_all[total_all != 0] / total_all[total_all != 0])*100
+        print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
+    return losses.avg, top1.avg, top5.avg
 
 def main():
     print("wait: free the last job memory")
     #time.sleep(30)
-
+    best_acc = 0
     opt = parse_option()
-
+    logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
     # build data loader
-    train_loader = set_loader(opt)
+    train_loader, linear_train_loader, val_loader = set_loader(opt)
 
     # build model and criterion
-    model, criterion = set_model(opt)
+    model, classifier, criterion, linear_criterion = set_model(opt)
 
 
     # build optimizer
     optimizer = set_optimizer(opt, model)
+    linear_opt = set_optimizer(opt, classifier)
+
     init_epoch = 1
     best_loss = 100
 
@@ -376,23 +553,37 @@ def main():
         optimizer.load_state_dict(ckpt['optimizer'])
         opt = ckpt['opt']
         best_loss = ckpt['loss']
-    # tensorboard
-    logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
-
 
     # training routine
     for epoch in range(init_epoch, opt.epochs + 1):
         adjust_learning_rate(opt, optimizer, epoch)
-
+        adjust_learning_rate(opt, linear_opt, epoch)
         # train for one epoch
         time1 = time.time()
         loss = train(train_loader, model, criterion, optimizer, epoch, opt)
         time2 = time.time()
+
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
         # tensorboard logger
-        logger.log_value('loss', loss, epoch)
-        logger.log_value('learning_rate', optimizer.param_groups[0]['lr'], epoch)
+        logger.log_value('pretraining_loss', loss, epoch)
+        logger.log_value('pretraining_learning_rate', optimizer.param_groups[0]['lr'], epoch)
+
+        loss, acc = linear_train(linear_train_loader, model, classifier, linear_criterion,
+                          linear_opt, epoch, opt)
+
+        # tensorboard logger
+        logger.log_value('training loss', loss, epoch)
+        logger.log_value('training accuracy', acc, epoch)
+
+        # eval for one epoch
+        loss, val_top1, val_top5 = linear_validate(val_loader, model, classifier, linear_criterion, opt)
+        logger.log_value('testing loss', loss, epoch)
+        logger.log_value('testing top 1 accuracy', val_top1, epoch)
+        logger.log_value('testing top 5 accuracy', val_top5, epoch)
+        time3 = time.time()
+        print('Train epoch {}, total time after eval {:.2f}, accuracy:{:.2f}'.format(
+            epoch, time3 - time1, acc))
 
         if opt.resume:
             #if loss < best_loss:

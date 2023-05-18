@@ -68,8 +68,18 @@ def parse_option():
                         help='path to pre-trained model')
     parser.add_argument('--finetune', action='store_true',
                         help='liner or whole network')
+    parser.add_argument('--keep_size', action='store_true',
+                        help='maintain the input image size')
     opt = parser.parse_args()
+    
+    if opt.finetune:
+        opt.learning_rate = 0.05*opt.batch_size/256
+        opt.lr_decay_epochs = '1000'
+    else:
+        opt.learning_rate = 0.1 * opt.batch_size / 256
 
+
+    
     tb_dir = "tensorboard_" + opt.data_folder + opt.dataset
     opt.tb_folder = os.path.join(opt.ckpt, tb_dir)
     opt.ckpt = opt.ckpt + "last.pth"
@@ -131,7 +141,7 @@ def set_loader(opt):
         std = (0.229, 0.224, 0.225)
     normalize = transforms.Normalize(mean=mean, std=std)
 
-    if opt.size == 32 and opt.finetune:
+    if opt.size == 32 and opt.finetune and not opt.keep_size:
         train_transform = transforms.Compose([
             transforms.Resize(224),
             transforms.RandomResizedCrop(224, scale=(0.2, 1.)),
