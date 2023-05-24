@@ -506,14 +506,20 @@ class SupConTupletLoss2(nn.Module):
         )
         logits_mask = torch.square(mask - 1)
 
+        logits_mask_org = logits_self_mask
+        # loss 2 try not remove mid ones in mask
         mask = mask * logits_self_mask
 
         # compute log_prob, use exp to range negative logits to [0,1]
         # loss 1
-
         exp_logits = torch.exp(logits) * logits_mask # add all positive pairs
-        neg_label_logits = (exp_logits.sum(1, keepdim=True)).expand_as(exp_logits)
-        log_prob = torch.log(1+neg_label_logits) - logits
+
+        # exp_logits = torch.exp(logits) * logits_self_mask  # not add positive pairs
+
+        # logit - log(exp(logit).sum) it is MSE in MLE???
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
+
+
         # compute mean of log-likelihood over positive
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
 
@@ -536,14 +542,9 @@ class SupConTupletLoss2(nn.Module):
         triplet_loss = torch.log(1 + exp_logits_self_diff.sum(1, keepdim=False))
 
         # loss
-        loss_1 = (self.temperature / self.base_temperature) * mean_log_prob_pos
-        loss = loss_1.view(anchor_count, batch_size).mean()*0.6 + triplet_loss.mean()*0.4
-        # don't know why loss 3 will not go down, but loss 2 will
-        loss2 = torch.log(torch.exp(triplet_loss)*torch.exp(mean_log_prob_pos)).mean() * (self.temperature / self.base_temperature)*0.5
-        loss3 = torch.log(torch.exp(triplet_loss+mean_log_prob_pos)).mean() * (self.temperature / self.base_temperature)
-        loss4 = (triplet_loss + mean_log_prob_pos).mean() * (self.temperature / self.base_temperature)
-        loss5 = torch.log((torch.exp(triplet_loss)*torch.exp(mean_log_prob_pos)).sum()).mean() * (self.temperature / self.base_temperature)
-        return loss2
+        loss = (self.temperature / self.base_temperature) * (triplet_loss - mean_log_prob_pos)/2
+        loss = loss.view(anchor_count, batch_size).mean()
+        return loss
 
 class SupConTupletLoss3(nn.Module):
     # remove the part positive samples from negative calculation
@@ -623,22 +624,29 @@ class SupConTupletLoss3(nn.Module):
         )
         logits_mask = torch.square(mask - 1)
 
+        logits_mask_org = logits_self_mask
+        # loss 2 try not remove mid ones in mask
         mask = mask * logits_self_mask
 
         # compute log_prob, use exp to range negative logits to [0,1]
         # loss 1
+        exp_logits = torch.exp(logits) * logits_mask  # add all positive pairs
 
-        exp_logits = torch.exp(logits) * logits_mask
-        neg_label_logits = (exp_logits.sum(1, keepdim=True)).expand_as(exp_logits)
-        log_prob = torch.log(1+neg_label_logits) - logits
+        # exp_logits = torch.exp(logits) * logits_self_mask  # not add positive pairs
+
+        # logit - log(exp(logit).sum) it is MSE in MLE???
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
+
+        relu = torch.nn.ReLU()
+        neg_relu_prob = -relu(-log_prob)
         # compute mean of log-likelihood over positive
-        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
+        mean_log_prob_pos = (mask * neg_relu_prob).sum(1) / mask.sum(1)
 
         # TRIPLET LOSS ADVANCE
-        #tmp two channel mask
+        # tmp two channel mask
         sim_mask = torch.scatter(torch.zeros_like(mask),
                                  0,
-                                 torch.arange(batch_size,batch_size*2).view(1,-1).to(device)
+                                 torch.arange(batch_size, batch_size * 2).view(1, -1).to(device)
                                  , 1)
         sim_mask = sim_mask + sim_mask.T
         trip_mask = torch.scatter(
@@ -647,21 +655,12 @@ class SupConTupletLoss3(nn.Module):
             torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
             0
         )
-        logits_pos = (logits*sim_mask).sum(1, keepdim=True)
+        logits_pos = (logits * sim_mask).sum(1, keepdim=True)
         logits_neg = logits * trip_mask
         exp_logits_self_diff = torch.exp(logits_neg - logits_pos)
         triplet_loss = torch.log(1 + exp_logits_self_diff.sum(1, keepdim=False))
-
-
-        # combine loss
-        exp_base = torch.exp(logits) * trip_mask
-        baseLogits = torch.log(exp_base.sum(1, keepdim=True)*exp_logits.sum(1, keepdim=True))
-        top1Logits = logits
-        top2Logits = logits_pos #anchor_dot_contrast*sim_mask
-        # prob = torch.log(1+ (top1Logits/top2Logits)/baseLogits)
-        prob = (top1Logits - top2Logits) - baseLogits
-        mean_log_prob_pos = (mask * prob).sum(1) / mask.sum(1)
+        # TODO: update loss to paper loss
         # loss
-        loss_1 = -(self.temperature / self.base_temperature) * mean_log_prob_pos
-        loss = loss_1.view(anchor_count, batch_size).mean()
+        loss = (self.temperature / self.base_temperature) * (triplet_loss - mean_log_prob_pos) / 2
+        loss = loss.view(anchor_count, batch_size).mean()
         return loss

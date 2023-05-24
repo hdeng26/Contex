@@ -72,11 +72,11 @@ def parse_option():
                         help='maintain the input image size')
     opt = parser.parse_args()
     
-    if opt.finetune:
-        opt.learning_rate = 0.05*opt.batch_size/256
-        opt.lr_decay_epochs = '1000'
-    else:
-        opt.learning_rate = 0.1 * opt.batch_size / 256
+    #if opt.finetune:
+    #    opt.learning_rate = 0.05*opt.batch_size/256
+    #    opt.lr_decay_epochs = '1000'
+    #else:
+    #    opt.learning_rate = 0.1 * opt.batch_size / 256
 
 
     

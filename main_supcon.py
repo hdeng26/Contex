@@ -16,6 +16,7 @@ from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet, LinearClassifier
 from losses import SupConLoss0, SupConLoss1, SupConLoss2, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3
+from imagenet32Loader import ImageNetDownSample
 
 #from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
@@ -44,6 +45,8 @@ def parse_option():
                         help='print frequency')
     parser.add_argument('--save_freq', type=int, default=10,
                         help='save frequency')
+    parser.add_argument('--eval_freq', type=int, default=1,
+                        help='eval frequency')
     parser.add_argument('--batch_size', type=int, default=1024,
                         help='batch_size')
     parser.add_argument('--num_workers', type=int, default=12,
@@ -72,7 +75,7 @@ def parse_option():
     # model dataset
     parser.add_argument('--model', type=str, default='resnet50')
     parser.add_argument('--dataset', type=str, default='cifar10',
-                        choices=['cifar10', 'cifar100', 'cars', 'food', 'path'], help='dataset')
+                        choices=['cifar10', 'cifar100', 'cars', 'food', 'imagenet32', 'path'], help='dataset')
     parser.add_argument('--mean', type=str, help='mean of dataset in path in form of str tuple')
     parser.add_argument('--std', type=str, help='std of dataset in path in form of str tuple')
     parser.add_argument('--data_folder', type=str, default=None, help='path to custom dataset')
@@ -105,6 +108,8 @@ def parse_option():
         opt.n_cls = 10
     elif opt.dataset == 'cifar100':
         opt.n_cls = 100
+    elif opt.dataset == 'imagenet32':
+        opt.n_cls = 1000
     elif opt.dataset == 'sun':
         opt.n_cls = 397
     elif opt.dataset == 'DTD':
@@ -176,11 +181,7 @@ def set_loader(opt):
     elif opt.dataset == 'cifar100':
         mean = (0.5071, 0.4867, 0.4408)
         std = (0.2675, 0.2565, 0.2761)
-    elif opt.dataset == 'cars':
-        # use imagenet std mean instead
-        mean = (0.485, 0.456, 0.406)
-        std = (0.229, 0.224, 0.225)
-    elif opt.dataset == 'food':
+    elif opt.dataset == 'imagenet32':
         # use imagenet std mean instead
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
@@ -241,10 +242,14 @@ def set_loader(opt):
         val_dataset = datasets.CIFAR100(root=opt.data_folder,
                                         train=False,
                                         transform=val_transform)
-    elif opt.dataset == 'cars':
-        train_dataset = datasets.StanfordCars(root=opt.data_folder,
-                                          transform=TwoCropTransform(train_transform),
-                                          download=True)
+    elif opt.dataset == 'imagenet32':
+        train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
+                                          transform=TwoCropTransform(train_transform))
+        linear_train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
+                                                transform=linear_train_transform)
+        val_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_val',
+                                        train=False,
+                                        transform=val_transform)
     elif opt.dataset == 'food':
         train_dataset = datasets.Food101(root=opt.data_folder,
                                           transform=TwoCropTransform(train_transform),
@@ -253,8 +258,7 @@ def set_loader(opt):
         train_dataset = datasets.ImageFolder(root=opt.data_folder,
                                             transform=TwoCropTransform(train_transform))
         linear_train_dataset = datasets.ImageFolder(root=opt.data_folder,
-                                                transform=linear_train_transform,
-                                                download=True)
+                                                transform=linear_train_transform)
         val_dataset = datasets.ImageFolder(root=opt.data_folder + "Validation_set",
                                            transform=val_transform_imagenet)
     else:
@@ -281,7 +285,7 @@ def set_model(opt):
     elif opt.loss_type == 1:
         criterion = SupConLoss1(temperature=opt.temp)
     elif opt.loss_type == -2:
-        criterion = SupConTupletLoss3(temperature=opt.temp)
+        criterion = SupConTupletLoss2(temperature=opt.temp)
     elif opt.loss_type == -1:
         criterion = SupConTupletLoss(temperature=opt.temp)
     else:
@@ -380,8 +384,10 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
             features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
             if opt.method == 'SupCon':
                 loss = criterion(features, labels)
+                loss_self = criterion(features)
             elif opt.method == 'SimCLR':
                 loss = criterion(features)
+                loss_self = criterion(features)
             else:
                 raise ValueError('contrastive method not supported: {}'.
                                  format(opt.method))
@@ -408,7 +414,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
                    data_time=data_time, loss=losses))
             sys.stdout.flush()
 
-    return losses.avg
+    return losses.avg, loss_self
 
 def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
     """one epoch training"""
@@ -560,30 +566,32 @@ def main():
         adjust_learning_rate(opt, linear_opt, epoch)
         # train for one epoch
         time1 = time.time()
-        loss = train(train_loader, model, criterion, optimizer, epoch, opt)
+        loss, loss_self = train(train_loader, model, criterion, optimizer, epoch, opt)
         time2 = time.time()
 
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
         # tensorboard logger
         logger.log_value('pretraining_loss', loss, epoch)
+        logger.log_value('self_loss', loss_self, epoch)
         logger.log_value('pretraining_learning_rate', optimizer.param_groups[0]['lr'], epoch)
 
-        loss, acc = linear_train(linear_train_loader, model, classifier, linear_criterion,
-                          linear_opt, epoch, opt)
+        if epoch % opt.eval_freq == 0:
+            loss, acc = linear_train(linear_train_loader, model, classifier, linear_criterion,
+                              linear_opt, epoch, opt)
 
-        # tensorboard logger
-        logger.log_value('training loss', loss, epoch)
-        logger.log_value('training accuracy', acc, epoch)
+            # tensorboard logger
+            logger.log_value('training loss', loss, epoch)
+            logger.log_value('training accuracy', acc, epoch)
 
-        # eval for one epoch
-        loss, val_top1, val_top5 = linear_validate(val_loader, model, classifier, linear_criterion, opt)
-        logger.log_value('testing loss', loss, epoch)
-        logger.log_value('testing top 1 accuracy', val_top1, epoch)
-        logger.log_value('testing top 5 accuracy', val_top5, epoch)
-        time3 = time.time()
-        print('Train epoch {}, total time after eval {:.2f}, accuracy:{:.2f}'.format(
-            epoch, time3 - time1, acc))
+            # eval for one epoch
+            loss, val_top1, val_top5 = linear_validate(val_loader, model, classifier, linear_criterion, opt)
+            logger.log_value('testing loss', loss, epoch)
+            logger.log_value('testing top 1 accuracy', val_top1, epoch)
+            logger.log_value('testing top 5 accuracy', val_top5, epoch)
+            time3 = time.time()
+            print('Train epoch {}, total time after eval {:.2f}, accuracy:{:.2f}'.format(
+                epoch, time3 - time1, acc))
 
         if opt.resume:
             #if loss < best_loss:
@@ -594,6 +602,7 @@ def main():
             best_loss = loss
 
         elif epoch % opt.save_freq == 0:
+
             save_file = os.path.join(
                 opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
             save_model(model, optimizer, opt, epoch, loss, save_file)
