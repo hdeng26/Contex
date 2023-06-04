@@ -81,7 +81,6 @@ class SupConLoss0(nn.Module):
             torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
             0
         )
-        logits_mask = torch.square(mask - 1)
 
         mask = mask * logits_self_mask # remove mid ones from mask
 
@@ -406,11 +405,11 @@ class SupConTupletLoss(nn.Module):
         mean_log_prob_pos = (mask * neg_relu_prob).sum(1) / mask.sum(1)
 
         # TRIPLET LOSS ADVANCE
-        #tmp two channel mask
-        sim_mask = torch.scatter(torch.zeros_like(mask),
-                                 0,
-                                 torch.arange(batch_size,batch_size*2).view(1,-1).to(device)
-                                 , 1)
+        sim_mask = torch.zeros_like(mask)
+        for i in range(1, anchor_count):
+            sim_mask.scatter_(0,
+                              torch.arange(batch_size * i, batch_size * anchor_count).view(1, -1).to(device),
+                              1).to(device)
         sim_mask = sim_mask + sim_mask.T
         trip_mask = torch.scatter(
             torch.ones_like(mask),
@@ -418,10 +417,12 @@ class SupConTupletLoss(nn.Module):
             torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
             0
         )
-        logits_pos = (logits*sim_mask).sum(1, keepdim=True)
+        logits_pos = (logits * sim_mask).sum(1, keepdim=True)
         logits_neg = logits * trip_mask
         exp_logits_self_diff = torch.exp(logits_neg - logits_pos)
         triplet_loss = torch.log(1 + exp_logits_self_diff.sum(1, keepdim=False))
+
+
 
         # loss
         loss = (self.temperature / self.base_temperature) * (triplet_loss - mean_log_prob_pos)/2
@@ -524,12 +525,10 @@ class SupConTupletLoss2(nn.Module):
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
 
         # TRIPLET LOSS ADVANCE
-        #tmp two channel mask
-        sim_mask = torch.scatter(torch.zeros_like(mask),
-                                 0,
-                                 torch.arange(batch_size,batch_size*2).view(1,-1).to(device)
-                                 , 1)
-        sim_mask = sim_mask + sim_mask.T
+        #chnanel based sim
+        sim_mask = torch.eye(batch_size, dtype=torch.float32).to(device)
+        sim_mask = sim_mask.repeat(anchor_count, contrast_count)
+        sim_mask = sim_mask * logits_self_mask
         trip_mask = torch.scatter(
             torch.ones_like(mask),
             1,
@@ -539,7 +538,7 @@ class SupConTupletLoss2(nn.Module):
         logits_pos = (logits*sim_mask).sum(1, keepdim=True)
         logits_neg = logits * trip_mask
         exp_logits_self_diff = torch.exp(logits_neg - logits_pos)
-        triplet_loss = torch.log(1 + exp_logits_self_diff.sum(1, keepdim=False))
+        triplet_loss = torch.log(exp_logits_self_diff.sum(1, keepdim=False))
 
         # loss
         loss = (self.temperature / self.base_temperature) * (triplet_loss - mean_log_prob_pos)/2
@@ -547,7 +546,7 @@ class SupConTupletLoss2(nn.Module):
         return loss
 
 class SupConTupletLoss3(nn.Module):
-    # remove the part positive samples from negative calculation
+    # re-orgnize the loss function and run
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
     It also supports the unsupervised contrastive loss in SimCLR"""
     def __init__(self, temperature=0.07, contrast_mode='all',
