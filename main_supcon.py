@@ -75,6 +75,8 @@ def parse_option():
                         help='momentum')
     parser.add_argument('--loss_type', type=int, default=0,
                         help='loss function to use')
+    parser.add_argument('--opt_type', type=str, default='sgd',
+                        help='optim to use')
 
     # model dataset
     parser.add_argument('--model', type=str, default='resnet50')
@@ -326,6 +328,8 @@ def set_model(opt):
         criterion = SupConLoss0(temperature=opt.temp)
     elif opt.loss_type == 1:
         criterion = SupConLoss1(temperature=opt.temp)
+    elif opt.loss_type == -3:
+        criterion = SupConTupletLoss3(temperature=opt.temp)
     elif opt.loss_type == -2:
         criterion = SupConTupletLoss2(temperature=opt.temp)
     elif opt.loss_type == -1:
@@ -531,6 +535,8 @@ def linear_validate(val_loader, model, classifier, criterion, opt):
             correct_all = torch.zeros(opt.n_cls).cuda()
             total_all = torch.zeros(opt.n_cls).cuda()
         end = time.time()
+        best_top1 = 0
+        best_top5 = 0
         for idx, (images, labels) in enumerate(val_loader):
             images = images.float().cuda()
             labels = labels.cuda()
@@ -559,7 +565,10 @@ def linear_validate(val_loader, model, classifier, criterion, opt):
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
-
+            if top1.val > best_top1:
+                best_top1 = top1.val
+            if top5.val > best_top5:
+                best_top5 = top5.val
             if idx % opt.print_freq == 0:
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -567,13 +576,14 @@ def linear_validate(val_loader, model, classifier, criterion, opt):
                       'Acc@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                        idx, len(val_loader), batch_time=batch_time,
                        loss=losses, top1=top1))
+
     if opt.acc_per_class:
         top1_all = torch.mean(correct_all[total_all != 0] / total_all[total_all != 0])*100
         print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
-    return losses.avg, top1.avg, top5.avg
+    return losses.avg, top1.avg, top5.avg, best_top1, best_top5
 
 def main():
-    torch._dynamo.config.verbose = True
+    # orch._dynamo.config.verbose = True
     opt = parse_option()
     logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
     # build data loader
@@ -624,13 +634,15 @@ def main():
             logger.log_value('training accuracy', acc, epoch)
 
             # eval for one epoch
-            loss, val_top1, val_top5 = linear_validate(val_loader, model, classifier, linear_criterion, opt)
+            loss, val_top1, val_top5, best_top1, best_top5 = linear_validate(val_loader, model, classifier, linear_criterion, opt)
             logger.log_value('testing loss', loss, epoch)
             logger.log_value('testing top 1 accuracy', val_top1, epoch)
             logger.log_value('testing top 5 accuracy', val_top5, epoch)
+            logger.log_value('best top 1 accuracy', best_top1, epoch)
+            logger.log_value('best top 5 accuracy', best_top5, epoch)
             time3 = time.time()
             print('Train epoch {}, total time after eval {:.2f}, eval accuracy:{:.2f}'.format(
-                epoch, time3 - time1, val_top1))
+                epoch, time3 - time1, best_top1))
 
         if opt.resume:
             #if loss < best_loss:
