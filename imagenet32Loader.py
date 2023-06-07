@@ -167,33 +167,33 @@ class ImageNetDownSample(data.Dataset):
         tmp = '    Target Transforms (if any): '
         fmt_str += '{0}{1}'.format(tmp, self.target_transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
         return fmt_str
-
-mean = (0.485, 0.456, 0.406)
-std = (0.229, 0.224, 0.225)
-normalize = transforms.Normalize(mean=mean, std=std)
-
-linear_train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(size=32, scale=(0.2, 1.)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        normalize,
-    ])
-val_transform = transforms.Compose([
-    transforms.ToTensor(),
-    normalize,
-])
-
-linear_train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
-                                        transform=linear_train_transform)
-val_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_val',
-                                train=False,
-                                transform=val_transform)
-
-train_sampler = None
-
-linear_train_loader = torch.utils.data.DataLoader(
-    linear_train_dataset, batch_size=32, shuffle=(train_sampler is None),
-    num_workers=8, pin_memory=True, sampler=train_sampler)
-val_loader = torch.utils.data.DataLoader(
-    val_dataset, batch_size=32, shuffle=False,
-    num_workers=8, pin_memory=True)
+#
+# mean = (0.485, 0.456, 0.406)
+# std = (0.229, 0.224, 0.225)
+# normalize = transforms.Normalize(mean=mean, std=std)
+#
+# linear_train_transform = transforms.Compose([
+#         transforms.RandomResizedCrop(size=32, scale=(0.2, 1.)),
+#         transforms.RandomHorizontalFlip(),
+#         transforms.ToTensor(),
+#         normalize,
+#     ])
+# val_transform = transforms.Compose([
+#     transforms.ToTensor(),
+#     normalize,
+# ])
+#
+# linear_train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
+#                                         transform=linear_train_transform)
+# val_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_val',
+#                                 train=False,
+#                                 transform=val_transform)
+#
+# train_sampler = None
+#
+# linear_train_loader = torch.utils.data.DataLoader(
+#     linear_train_dataset, batch_size=32, shuffle=(train_sampler is None),
+#     num_workers=8, pin_memory=True, sampler=train_sampler)
+# val_loader = torch.utils.data.DataLoader(
+#     val_dataset, batch_size=32, shuffle=False,
+#     num_workers=8, pin_memory=True)
