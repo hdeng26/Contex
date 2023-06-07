@@ -18,7 +18,7 @@ from networks.resnet_big import SupConResNet, LinearClassifier
 from losses import SupConLoss0, SupConLoss1, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3
 from imagenet32Loader import ImageNetDownSample
 
-import torch._dynamo
+#import torch._dynamo
 
 #from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
