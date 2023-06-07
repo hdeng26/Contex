@@ -15,7 +15,7 @@ from util import TwoCropTransform, AverageMeter, QuadCropTransform
 from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet, LinearClassifier
-from losses import SupConLoss0, SupConLoss1, SupConLoss2, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3
+from losses import SupConLoss0, SupConLoss1, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3
 from imagenet32Loader import ImageNetDownSample
 
 import torch._dynamo
@@ -529,14 +529,14 @@ def linear_validate(val_loader, model, classifier, criterion, opt):
     losses = AverageMeter()
     top1 = AverageMeter()
     top5 = AverageMeter()
-
+    best_top1 = 0
+    best_top5 = 0
     with torch.no_grad():
         if opt.acc_per_class:
             correct_all = torch.zeros(opt.n_cls).cuda()
             total_all = torch.zeros(opt.n_cls).cuda()
         end = time.time()
-        best_top1 = 0
-        best_top5 = 0
+
         for idx, (images, labels) in enumerate(val_loader):
             images = images.float().cuda()
             labels = labels.cuda()
@@ -565,10 +565,7 @@ def linear_validate(val_loader, model, classifier, criterion, opt):
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
-            if top1.val > best_top1:
-                best_top1 = top1.val
-            if top5.val > best_top5:
-                best_top5 = top5.val
+
             if idx % opt.print_freq == 0:
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -580,7 +577,7 @@ def linear_validate(val_loader, model, classifier, criterion, opt):
     if opt.acc_per_class:
         top1_all = torch.mean(correct_all[total_all != 0] / total_all[total_all != 0])*100
         print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
-    return losses.avg, top1.avg, top5.avg, best_top1, best_top5
+    return losses.avg, top1.avg, top5.avg
 
 def main():
     # orch._dynamo.config.verbose = True
@@ -634,15 +631,13 @@ def main():
             logger.log_value('training accuracy', acc, epoch)
 
             # eval for one epoch
-            loss, val_top1, val_top5, best_top1, best_top5 = linear_validate(val_loader, model, classifier, linear_criterion, opt)
+            loss, val_top1, val_top5= linear_validate(val_loader, model, classifier, linear_criterion, opt)
             logger.log_value('testing loss', loss, epoch)
             logger.log_value('testing top 1 accuracy', val_top1, epoch)
             logger.log_value('testing top 5 accuracy', val_top5, epoch)
-            logger.log_value('best top 1 accuracy', best_top1, epoch)
-            logger.log_value('best top 5 accuracy', best_top5, epoch)
             time3 = time.time()
             print('Train epoch {}, total time after eval {:.2f}, eval accuracy:{:.2f}'.format(
-                epoch, time3 - time1, best_top1))
+                epoch, time3 - time1, val_top1))
 
         if opt.resume:
             #if loss < best_loss:
