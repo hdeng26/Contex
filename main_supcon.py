@@ -56,6 +56,9 @@ def parse_option():
     parser.add_argument('--epochs', type=int, default=1000,
                         help='number of training epochs')
 
+    parser.add_argument('--percent', type=int, default=100,
+                        help='percentage of labels')
+
     # training efficiency
     parser.add_argument('--amp', action='store_true',
                         help='Automatic Mixed Precision')
@@ -139,17 +142,17 @@ def parse_option():
     # set the path according to the environment
     if opt.data_folder is None:
         opt.data_folder = './datasets/'
-    opt.model_path = '../ckpts/SupCON/supplementary/{}_models'.format(opt.dataset)
-    opt.tb_path = '../ckpts/SupCON/supplementary/{}_tensorboard'.format(opt.dataset)
+    opt.model_path = '../ckpts/SupCON/semi_exp/{}_models'.format(opt.dataset)
+    opt.tb_path = '../ckpts/SupCON/semi_exp/{}_tensorboard'.format(opt.dataset)
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
     for it in iterations:
         opt.lr_decay_epochs.append(int(it))
 
-    opt.model_name = '{}_{}_{}_lr_{}_loss_{}_decay_{}_bsz_{}_epoch{}_temp_{}_trial_{}'.\
+    opt.model_name = '{}_{}_{}_lr_{}_loss_{}_channel_{}_bsz_{}_epoch{}_percent_label_{}_trial_{}'.\
         format(opt.method, opt.dataset, opt.model, opt.learning_rate, opt.loss_type,
-               opt.weight_decay, opt.batch_size, opt.epochs, opt.temp, opt.trial)
+               opt.num_chan, opt.batch_size, opt.epochs, opt.percent, opt.trial)
 
     if opt.cosine:
         opt.model_name = '{}_cosine'.format(opt.model_name)
@@ -427,7 +430,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
                 f1, f2 = torch.split(features, [bsz, bsz], dim=0)
                 features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
             if opt.method == 'SupCon':
-                loss = criterion(features, labels)
+                loss = criterion(features, percentage_label(opt.percent, labels))
                 loss_self = criterion(features)
             elif opt.method == 'SimCLR':
                 loss = criterion(features)
@@ -520,6 +523,7 @@ def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, o
     return losses.avg, top1.avg
 
 
+
 def linear_validate(val_loader, model, classifier, criterion, opt):
     """validation"""
     model.eval()
@@ -579,6 +583,12 @@ def linear_validate(val_loader, model, classifier, criterion, opt):
         print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
     return losses.avg, top1.avg, top5.avg
 
+def percentage_label(percent, label):
+    num_remove = int((1-percent/100)*label.size(dim=0))
+    replace_uniq = torch.arange(label.max()+1, label.max()+num_remove+1).cuda()
+    indices = torch.randperm(label.size(dim=0))[:num_remove].cuda()
+
+    return label.index_add(0, indices, replace_uniq)
 def main():
     # orch._dynamo.config.verbose = True
     opt = parse_option()
@@ -601,7 +611,7 @@ def main():
         ckpt = torch.load(ckpt_path, map_location='cpu')
         init_epoch = ckpt['epoch']
         optimizer.load_state_dict(ckpt['optimizer'])
-        opt = ckpt['opt']
+        # opt = ckpt['opt']
         best_loss = ckpt['loss']
 
     # training routine
