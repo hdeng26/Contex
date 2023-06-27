@@ -8,6 +8,8 @@ import math
 import torch.multiprocessing as mp
 import tensorboard_logger as tb_logger
 import torch
+import numpy as np
+import random
 import torch.backends.cudnn as cudnn
 from torchvision import transforms, datasets
 from util import adjust_learning_rate, warmup_learning_rate, accuracy, accuracy_per_class
@@ -184,6 +186,7 @@ def parse_option():
 
 
 def set_loader(opt):
+
     # construct data loader
     if opt.dataset == 'cifar10':
         mean = (0.4914, 0.4822, 0.4465)
@@ -312,8 +315,10 @@ def set_loader(opt):
 
 
     train_sampler = None
+    train_random_dataset = torch.utils.data.Subset(train_dataset, torch.randperm(len(train_dataset)))
+    #linear_train_dataset = torch.utils.data.Subset(linear_train_dataset, torch.randperm(len(linear_train_dataset)))
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+        train_random_dataset, batch_size=opt.batch_size, shuffle=False,
         num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
     linear_train_loader = torch.utils.data.DataLoader(
         linear_train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
@@ -583,15 +588,30 @@ def linear_validate(val_loader, model, classifier, criterion, opt):
         print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
     return losses.avg, top1.avg, top5.avg
 
+def set_seed(seed: int = 42) -> None:
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    # When running on the CuDNN backend, two further options must be set
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # Set a fixed value for the hash seed
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    # print(f"Random seed set as {seed}")
+
 def percentage_label(percent, label):
+    set_seed()
     num_remove = int((1-percent/100)*label.size(dim=0))
     replace_uniq = torch.arange(label.max()+1, label.max()+num_remove+1).cuda()
-    indices = torch.randperm(label.size(dim=0))[:num_remove].cuda()
+    g_cuda = torch.Generator(device='cuda')
+    indices = torch.randperm(label.size(dim=0), generator=g_cuda, device='cuda')[:num_remove]
 
     return label.index_add(0, indices, replace_uniq)
 def main():
     # orch._dynamo.config.verbose = True
     opt = parse_option()
+    set_seed()
     logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
     # build data loader
     train_loader, linear_train_loader, val_loader = set_loader(opt)
