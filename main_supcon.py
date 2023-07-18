@@ -315,13 +315,16 @@ def set_loader(opt):
 
 
     train_sampler = None
-    train_random_dataset = torch.utils.data.Subset(train_dataset, torch.randperm(len(train_dataset)))
+    set_seed()
+    indices = torch.randperm(len(train_dataset))
+    train_random_dataset = torch.utils.data.Subset(train_dataset, indices)
+    linear_train_random_dataset = torch.utils.data.Subset(linear_train_dataset, indices)
     #linear_train_dataset = torch.utils.data.Subset(linear_train_dataset, torch.randperm(len(linear_train_dataset)))
     train_loader = torch.utils.data.DataLoader(
         train_random_dataset, batch_size=opt.batch_size, shuffle=False,
         num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
     linear_train_loader = torch.utils.data.DataLoader(
-        linear_train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+        linear_train_random_dataset, batch_size=opt.batch_size, shuffle=False,
         num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=256, shuffle=False,
@@ -435,7 +438,8 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
                 f1, f2 = torch.split(features, [bsz, bsz], dim=0)
                 features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
             if opt.method == 'SupCon':
-                loss = criterion(features, percentage_label(opt.percent, labels))
+                remain_indices, p_label = percentage_label(opt.percent, labels)
+                loss = criterion(features, p_label)
                 loss_self = criterion(features)
             elif opt.method == 'SimCLR':
                 loss = criterion(features)
@@ -486,6 +490,12 @@ def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, o
         data_time.update(time.time() - end)
         images = images.cuda(non_blocking=True)
         labels = labels.cuda(non_blocking=True)
+
+        # remove no label data
+        remain_indices, _ = percentage_label(opt.percent, labels)
+        images = torch.index_select(images, 0, remain_indices)
+        labels = torch.index_select(labels, 0, remain_indices)
+
         bsz = labels.shape[0]
 
         # warm-up learning rate
@@ -494,6 +504,7 @@ def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, o
         # compute loss
         with torch.no_grad():
             features = model.encoder(images)
+
         if opt.model == "resnet50t4" or opt.model == "resnet101t4":
             output = classifier(features.detach())
         else:
@@ -600,6 +611,11 @@ def set_seed(seed: int = 42) -> None:
     os.environ["PYTHONHASHSEED"] = str(seed)
     # print(f"Random seed set as {seed}")
 
+def tensor_preserve(batch_size, rm_indices):
+    mask = torch.ones(batch_size.numel(), dtype=torch.bool)
+    mask[rm_indices] = False
+    return batch_size[mask]
+
 def percentage_label(percent, label):
     set_seed()
     num_remove = int((1-percent/100)*label.size(dim=0))
@@ -607,7 +623,12 @@ def percentage_label(percent, label):
     g_cuda = torch.Generator(device='cuda')
     indices = torch.randperm(label.size(dim=0), generator=g_cuda, device='cuda')[:num_remove]
 
-    return label.index_add(0, indices, replace_uniq)
+    # find preserve indices
+    batch_idx = torch.arange(label.size(dim=0)).cuda()
+    mask = torch.ones(batch_idx.numel(), dtype=torch.bool).cuda()
+    mask[indices] = False
+
+    return batch_idx[mask], label.index_add(0, indices, replace_uniq)
 def main():
     # orch._dynamo.config.verbose = True
     opt = parse_option()
@@ -661,7 +682,7 @@ def main():
             logger.log_value('training accuracy', acc, epoch)
 
             # eval for one epoch
-            loss, val_top1, val_top5= linear_validate(val_loader, model, classifier, linear_criterion, opt)
+            loss, val_top1, val_top5 = linear_validate(val_loader, model, classifier, linear_criterion, opt)
             logger.log_value('testing loss', loss, epoch)
             logger.log_value('testing top 1 accuracy', val_top1, epoch)
             logger.log_value('testing top 5 accuracy', val_top5, epoch)
@@ -670,12 +691,9 @@ def main():
                 epoch, time3 - time1, val_top1))
 
         if opt.resume:
-            #if loss < best_loss:
-            # save the best model
             save_file = os.path.join(
                 opt.save_folder, 'best.pth')
             save_model(model, optimizer, opt, epoch, loss, save_file)
-            best_loss = loss
 
         elif epoch % opt.save_freq == 0:
 
