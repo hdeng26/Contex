@@ -1,5 +1,7 @@
 from __future__ import print_function
 
+import random
+import numpy as np
 import sys
 import argparse
 import time
@@ -23,7 +25,44 @@ try:
 except ImportError:
     pass
 
+def percentage_label(percent, label):
+    set_seed()
+    num_remove = int((1-percent/100)*label.size(dim=0))
+    replace_uniq = torch.arange(label.max()+1, label.max()+num_remove+1).cuda()
+    g_cuda = torch.Generator(device='cuda')
+    indices = torch.randperm(label.size(dim=0), generator=g_cuda, device='cuda')[:num_remove]
 
+    # find preserve indices
+    batch_idx = torch.arange(label.size(dim=0)).cuda()
+    mask = torch.ones(batch_idx.numel(), dtype=torch.bool).cuda()
+    mask[indices] = False
+
+    '''tensor([   1,   34,   40,   42,   47,   68,   75,   95,   97,  101,  113,  116,
+         138,  139,  141,  148,  169,  201,  206,  217,  224,  249,  259,  281,
+         284,  332,  341,  344,  347,  361,  371,  400,  402,  408,  420,  433,
+         434,  444,  458,  466,  470,  478,  481,  497,  501,  503,  513,  517,
+         520,  522,  528,  549,  550,  558,  581,  587,  594,  611,  616,  633,
+         645,  646,  653,  675,  679,  706,  719,  720,  744,  749,  756,  760,
+         773,  784,  790,  793,  809,  818,  822,  850,  860,  871,  875,  883,
+         902,  903,  913,  914,  919,  920,  922,  952,  959,  968,  970,  972,
+         983,  986,  988, 1013, 1020, 1032, 1048, 1056, 1069, 1076, 1079, 1086,
+        1098, 1100, 1120, 1133, 1137, 1152, 1171, 1179, 1194, 1195, 1203, 1205,
+        1213, 1221, 1244, 1255, 1259, 1264, 1269, 1271, 1291, 1298, 1314, 1317,
+        1320, 1323, 1326, 1328, 1331, 1355, 1362, 1392, 1403, 1427, 1431, 1432],
+       device='cuda:0')'''
+    return batch_idx[mask], label.index_add(0, indices, replace_uniq)
+
+def set_seed(seed: int = 42) -> None:
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    # When running on the CuDNN backend, two further options must be set
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # Set a fixed value for the hash seed
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    # print(f"Random seed set as {seed}")
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
 
@@ -57,10 +96,14 @@ def parse_option():
     parser.add_argument('--data_folder', type=str, default='./datasets/', help='path to custom dataset')
     parser.add_argument('--size', type=int, default=32, help='parameter for RandomResizedCrop')
     # other setting
+    parser.add_argument('--percent', type=int, default=100,
+                        help='percentage of labels')
     parser.add_argument('--cosine', action='store_true',
                         help='using cosine annealing')
     parser.add_argument('--warm', action='store_true',
                         help='warm-up for large batch training')
+    parser.add_argument('--opt_type', type=str, default='sgd',
+                        help='optim to use')
 
     parser.add_argument('--acc_per_class', action='store_true',
                         help='use mean per class accuracy')
@@ -224,8 +267,12 @@ def set_loader(opt):
         raise ValueError(opt.dataset)
 
     train_sampler = None
+    set_seed()
+    indices = torch.randperm(len(train_dataset))
+    train_random_dataset = torch.utils.data.Subset(train_dataset, indices)
+
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+        train_random_dataset, batch_size=opt.batch_size, shuffle=False,
         num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=256, shuffle=False,
@@ -257,7 +304,7 @@ def set_model(opt):
     state_dict = ckpt['model']
 
     # adjust for cifar
-    if False and opt.size == 32 and opt.model == 'resnet50':
+    if opt.size == 32 and opt.model == 'resnet50':
         new_state_dict = {}
         for k, v in state_dict.items():
             k = k.replace("module.", "")
@@ -320,6 +367,12 @@ def train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
 
         images = images.cuda(non_blocking=True)
         labels = labels.cuda(non_blocking=True)
+
+        # remove no label data
+        remain_indices, _ = percentage_label(opt.percent, labels)
+        images = torch.index_select(images, 0, remain_indices)
+        labels = torch.index_select(labels, 0, remain_indices)
+
         bsz = labels.shape[0]
 
         # warm-up learning rate
@@ -425,10 +478,9 @@ def validate(val_loader, model, classifier, criterion, opt):
 
 
 def main():
-    print("wait: free the last job memory")
-    #time.sleep(30)
     best_acc = 0
     opt = parse_option()
+    set_seed()
     logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
 
     # build data loader

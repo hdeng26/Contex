@@ -41,6 +41,31 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 #except ImportError:
 #    pass
 
+def set_seed(seed: int = 42) -> None:
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    # When running on the CuDNN backend, two further options must be set
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # Set a fixed value for the hash seed
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    # print(f"Random seed set as {seed}")
+
+def percentage_label(percent, label):
+    set_seed()
+    num_remove = int((1-percent/100)*label.size(dim=0))
+    replace_uniq = torch.arange(label.max()+1, label.max()+num_remove+1).cuda()
+    g_cuda = torch.Generator(device='cuda')
+    indices = torch.randperm(label.size(dim=0), generator=g_cuda, device='cuda')[:num_remove]
+
+    # find preserve indices
+    batch_idx = torch.arange(label.size(dim=0)).cuda()
+    mask = torch.ones(batch_idx.numel(), dtype=torch.bool).cuda()
+    mask[indices] = False
+
+    return batch_idx[mask], label.index_add(0, indices, replace_uniq)
 
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
@@ -599,36 +624,13 @@ def linear_validate(val_loader, model, classifier, criterion, opt):
         print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
     return losses.avg, top1.avg, top5.avg
 
-def set_seed(seed: int = 42) -> None:
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    # When running on the CuDNN backend, two further options must be set
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    # Set a fixed value for the hash seed
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    # print(f"Random seed set as {seed}")
 
 def tensor_preserve(batch_size, rm_indices):
     mask = torch.ones(batch_size.numel(), dtype=torch.bool)
     mask[rm_indices] = False
     return batch_size[mask]
 
-def percentage_label(percent, label):
-    set_seed()
-    num_remove = int((1-percent/100)*label.size(dim=0))
-    replace_uniq = torch.arange(label.max()+1, label.max()+num_remove+1).cuda()
-    g_cuda = torch.Generator(device='cuda')
-    indices = torch.randperm(label.size(dim=0), generator=g_cuda, device='cuda')[:num_remove]
 
-    # find preserve indices
-    batch_idx = torch.arange(label.size(dim=0)).cuda()
-    mask = torch.ones(batch_idx.numel(), dtype=torch.bool).cuda()
-    mask[indices] = False
-
-    return batch_idx[mask], label.index_add(0, indices, replace_uniq)
 def main():
     # orch._dynamo.config.verbose = True
     opt = parse_option()
