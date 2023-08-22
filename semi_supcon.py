@@ -1,3 +1,4 @@
+
 from __future__ import print_function
 
 import os
@@ -216,6 +217,7 @@ def parse_option():
 
 
 def set_loader(opt):
+
     # construct data loader
     if opt.dataset == 'cifar10':
         mean = (0.4914, 0.4822, 0.4465)
@@ -344,11 +346,16 @@ def set_loader(opt):
 
 
     train_sampler = None
+    set_seed()
+    indices = torch.randperm(len(train_dataset))
+    train_random_dataset = torch.utils.data.Subset(train_dataset, indices)
+    linear_train_random_dataset = torch.utils.data.Subset(linear_train_dataset, indices)
+    #linear_train_dataset = torch.utils.data.Subset(linear_train_dataset, torch.randperm(len(linear_train_dataset)))
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+        train_random_dataset, batch_size=opt.batch_size, shuffle=False,
         num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
     linear_train_loader = torch.utils.data.DataLoader(
-        linear_train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+        linear_train_random_dataset, batch_size=opt.batch_size, shuffle=False,
         num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=256, shuffle=False,
@@ -462,8 +469,9 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
                 f1, f2 = torch.split(features, [bsz, bsz], dim=0)
                 features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
             if opt.method == 'SupCon':
-                loss, loss_self, loss_class = criterion(features, labels)
-                # loss_self = criterion(features)
+                remain_indices, p_label = percentage_label(opt.percent, labels)
+                loss = criterion(features, p_label)
+                loss_self = criterion(features)
             elif opt.method == 'SimCLR':
                 loss = criterion(features)
                 loss_self = loss
@@ -493,7 +501,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
                    data_time=data_time, loss=losses))
             sys.stdout.flush()
 
-    return losses.avg, loss_self, loss_class
+    return losses.avg, loss_self
 
 def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, opt, iteration_step):
     """one epoch training"""
@@ -512,6 +520,12 @@ def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, o
         data_time.update(time.time() - end)
         images = images.cuda(non_blocking=True)
         labels = labels.cuda(non_blocking=True)
+
+        # remove no label data
+        remain_indices, _ = percentage_label(opt.percent, labels)
+        images = torch.index_select(images, 0, remain_indices)
+        labels = torch.index_select(labels, 0, remain_indices)
+
         bsz = labels.shape[0]
 
         # warm-up learning rate
@@ -520,6 +534,7 @@ def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, o
         # compute loss
         with torch.no_grad():
             features = model.encoder(images)
+
         if opt.model == "resnet50t4" or opt.model == "resnet101t4":
             output = classifier(features.detach())
         else:
@@ -554,6 +569,7 @@ def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, o
     return losses.avg, top1.avg, iteration_step
 
 
+
 def linear_validate(val_loader, model, classifier, criterion, opt, writer, iteration_step):
     """validation"""
     model.eval()
@@ -579,6 +595,7 @@ def linear_validate(val_loader, model, classifier, criterion, opt, writer, itera
                 output = classifier(model.encoder(images))
             else:
                 output = classifier(torch.squeeze(model.encoder(images)))
+
             writer.add_embedding(output, global_step=iteration_step, metadata=labels.tolist())
             loss = criterion(output, labels)
             iteration_step += 1
@@ -612,14 +629,17 @@ def linear_validate(val_loader, model, classifier, criterion, opt, writer, itera
         print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
     return losses.avg, top1.avg, top5.avg, iteration_step
 
+
 def tensor_preserve(batch_size, rm_indices):
     mask = torch.ones(batch_size.numel(), dtype=torch.bool)
     mask[rm_indices] = False
     return batch_size[mask]
 
+
 def main():
     time.sleep(5)
     opt = parse_option()
+    set_seed()
     iteration_step = 0
 
     logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
@@ -651,7 +671,7 @@ def main():
 
 
         time1 = time.time()
-        loss, loss_self, loss_class = train(train_loader, model, criterion, optimizer, epoch, opt)
+        loss, loss_self = train(train_loader, model, criterion, optimizer, epoch, opt)
         time2 = time.time()
 
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
@@ -659,7 +679,6 @@ def main():
         # tensorboard logger
         logger.log_value('pretraining_loss', loss, epoch)
         logger.log_value('self_loss', loss_self, epoch)
-        logger.log_value('class_loss', loss_class, epoch)
         logger.log_value('pretraining_learning_rate', optimizer.param_groups[0]['lr'], epoch)
 
         if epoch % opt.eval_freq == 0:
@@ -700,4 +719,3 @@ def main():
 if __name__ == '__main__':
     iteration_step = 0
     main()
-
