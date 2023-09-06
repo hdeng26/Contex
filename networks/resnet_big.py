@@ -132,7 +132,7 @@ def resnet34(**kwargs):
 
 
 def resnet50(**kwargs):
-    res50 = models.resnet50(pretrained=False)
+    res50 = models.resnet50(weights=None)
     return nn.Sequential(*list(res50.children())[:-1])#ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
 
 def resnet50t4(**kwargs):
@@ -140,7 +140,7 @@ def resnet50t4(**kwargs):
     return ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
 
 def resnet101(**kwargs):
-    res101 = models.resnet101(pretrained=False)
+    res101 = models.resnet101(weights=None)
     return nn.Sequential(*list(res101.children())[:-1])
 
 def resnet101t4(**kwargs):
