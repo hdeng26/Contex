@@ -72,7 +72,7 @@ def parse_option():
                         help='save frequency')
     parser.add_argument('--batch_size', type=int, default=256,
                         help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=12,
+    parser.add_argument('--num_workers', type=int, default=14,
                         help='num of workers to use')
     parser.add_argument('--epochs', type=int, default=100,
                         help='number of training epochs')
@@ -138,6 +138,9 @@ def parse_option():
     if opt.cosine:
         opt.model_name = '{}_cosine'.format(opt.model_name)
 
+    if opt.finetune:
+        opt.model_name = '{}_finetune'.format(opt.model_name)
+        
     # warm-up for large-batch training,
     if opt.warm:
         opt.model_name = '{}_warm'.format(opt.model_name)
@@ -424,7 +427,7 @@ def validate(val_loader, model, classifier, criterion, opt):
     """validation"""
     model.eval()
     classifier.eval()
-
+    best_top1 = 0
     batch_time = AverageMeter()
     losses = AverageMeter()
     top1 = AverageMeter()
@@ -474,6 +477,7 @@ def validate(val_loader, model, classifier, criterion, opt):
     if opt.acc_per_class:
         top1_all = torch.mean(correct_all[total_all != 0] / total_all[total_all != 0])*100
         print(' * Acc@1 {top1:.3f}'.format(top1=top1_all))
+
     return losses.avg, top1.avg, top5.avg
 
 

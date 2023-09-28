@@ -80,7 +80,7 @@ def parse_option():
                         help='eval frequency')
     parser.add_argument('--batch_size', type=int, default=1024,
                         help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=10,
+    parser.add_argument('--num_workers', type=int, default=14,
                         help='num of workers to use')
     parser.add_argument('--epochs', type=int, default=1000,
                         help='number of training epochs')
@@ -174,8 +174,8 @@ def parse_option():
     # set the path according to the environment
     if opt.data_folder is None:
         opt.data_folder = './datasets/'
-    opt.model_path = '../ckpts/SupCON/weight_exp/{}_models'.format(opt.dataset)
-    opt.tb_path = '../ckpts/SupCON/weight_exp/{}_tensorboard'.format(opt.dataset)
+    opt.model_path = '../ckpts/SupCON/multi_channel/{}_models'.format(opt.dataset)
+    opt.tb_path = '../ckpts/SupCON/multi_channel/{}_tensorboard'.format(opt.dataset)
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
@@ -462,8 +462,13 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
                 f1, f2 = torch.split(features, [bsz, bsz], dim=0)
                 features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
             if opt.method == 'SupCon':
-                loss, loss_self, loss_class = criterion(features, labels)
-                # loss_self = criterion(features)
+                if opt.loss_type == 0:
+                    loss = criterion(features, labels)
+                    loss_self = criterion(features)
+                    loss_class = loss
+                else:
+                    loss, loss_self, loss_class = criterion(features, labels)
+
             elif opt.method == 'SimCLR':
                 loss = criterion(features)
                 loss_self = loss
@@ -495,7 +500,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
 
     return losses.avg, loss_self, loss_class
 
-def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, opt, iteration_step):
+def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
     """one epoch training"""
     model.eval()
     classifier.train()
@@ -525,7 +530,6 @@ def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, o
         else:
             output = classifier(torch.squeeze(features.detach()))
         loss = criterion(output, labels)
-        iteration_step += 1
         # update metric
         losses.update(loss.item(), bsz)
         acc1, acc5 = accuracy(output, labels, topk=(1, 5))
@@ -551,7 +555,7 @@ def linear_train(train_loader, model, classifier, criterion, optimizer, epoch, o
                    data_time=data_time, loss=losses, top1=top1))
             sys.stdout.flush()
 
-    return losses.avg, top1.avg, iteration_step
+    return losses.avg, top1.avg
 
 
 def linear_validate(val_loader, model, classifier, criterion, opt, writer, iteration_step):
@@ -581,7 +585,7 @@ def linear_validate(val_loader, model, classifier, criterion, opt, writer, itera
                 output = classifier(torch.squeeze(model.encoder(images)))
             writer.add_embedding(output, global_step=iteration_step, metadata=labels.tolist())
             loss = criterion(output, labels)
-            iteration_step += 1
+            iteration_step = 1
             # update metric
             losses.update(loss.item(), bsz)
             if opt.acc_per_class:
@@ -663,8 +667,8 @@ def main():
         logger.log_value('pretraining_learning_rate', optimizer.param_groups[0]['lr'], epoch)
 
         if epoch % opt.eval_freq == 0:
-            loss, acc, iteration_step = linear_train(linear_train_loader, model, classifier, linear_criterion,
-                              linear_opt, epoch, opt, iteration_step)
+            loss, acc = linear_train(linear_train_loader, model, classifier, linear_criterion,
+                              linear_opt, epoch, opt)
 
             # tensorboard logger
             logger.log_value('training loss', loss, epoch)
