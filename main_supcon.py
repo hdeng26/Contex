@@ -18,7 +18,7 @@ from util import TwoCropTransform, AverageMeter, QuadCropTransform
 from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet, LinearClassifier
-from losses import SupConLoss0, SupConLoss1, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3
+from losses import SupConLoss0, SupConLoss1, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3, SupConLossWithQueue, SupConLossWithQueue2
 from imagenet32Loader import ImageNetDownSample
 
 #import torch._dynamo
@@ -80,7 +80,7 @@ def parse_option():
                         help='eval frequency')
     parser.add_argument('--batch_size', type=int, default=1024,
                         help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=14,
+    parser.add_argument('--num_workers', type=int, default=12,
                         help='num of workers to use')
     parser.add_argument('--epochs', type=int, default=1000,
                         help='number of training epochs')
@@ -128,7 +128,7 @@ def parse_option():
     # temperature
     parser.add_argument('--temp', type=float, default=0.07,
                         help='temperature for loss function')
-    parser.add_argument('--self_weight', type=float, default=0.5,
+    parser.add_argument('--self_weight', type=float, default=0.7,
                         help='weight for self loss function')
 
 
@@ -174,24 +174,24 @@ def parse_option():
     # set the path according to the environment
     if opt.data_folder is None:
         opt.data_folder = './datasets/'
-    opt.model_path = '../ckpts/SupCON/multi_channel/{}_models'.format(opt.dataset)
-    opt.tb_path = '../ckpts/SupCON/multi_channel/{}_tensorboard'.format(opt.dataset)
+    opt.model_path = '../ckpts/SupCON/memory/{}_models'.format(opt.dataset)
+    opt.tb_path = '../ckpts/SupCON/memory/{}_tensorboard'.format(opt.dataset)
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
     for it in iterations:
         opt.lr_decay_epochs.append(int(it))
 
-    opt.model_name = '{}_{}_{}_lr_{}_loss_{}_channel_{}_bsz_{}_epoch{}_percent_label_{}_trial_{}'.\
+    opt.model_name = '{}_{}_{}_lr_{}_loss_{}_channel_{}_bsz_{}_epoch{}_weight_{}_trial_{}'.\
         format(opt.method, opt.dataset, opt.model, opt.learning_rate, opt.loss_type,
-               opt.num_chan, opt.batch_size, opt.epochs, opt.percent, opt.trial)
+               opt.num_chan, opt.batch_size, opt.epochs, opt.self_weight, opt.trial)
 
     if opt.cosine:
         opt.model_name = '{}_cosine'.format(opt.model_name)
 
     # warm-up for large-batch training,
 
-    if opt.batch_size > 256:
+    if opt.batch_size > 128:
         opt.warm = True
     if opt.warm:
         opt.model_name = '{}_warm'.format(opt.model_name)
@@ -362,13 +362,16 @@ def set_model(opt):
     if opt.loss_type == 0:
         criterion = SupConLoss0(temperature=opt.temp)
     elif opt.loss_type == 1:
-        criterion = SupConLoss1(temperature=opt.temp)
+        criterion = SupConLossWithQueue(temperature=opt.temp)
+    elif opt.loss_type == 2:
+        criterion = SupConLossWithQueue2(temperature=opt.temp)
     elif opt.loss_type == -3:
         criterion = SupConTupletLoss3(temperature=opt.temp, self_weight=opt.self_weight)
     elif opt.loss_type == -2:
         criterion = SupConTupletLoss2(temperature=opt.temp, self_weight=opt.self_weight)
     elif opt.loss_type == -1:
         criterion = SupConTupletLoss(temperature=opt.temp)
+
     else:
         print("Error finding loss function\n")
     # enable synchronized Batch Normalization
@@ -432,7 +435,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
-
+    optimizer.zero_grad()
     end = time.time()
     for idx, (images, labels) in enumerate(train_loader):
         data_time.update(time.time() - end)
@@ -480,9 +483,10 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         losses.update(loss.item(), bsz)
 
         # SGD
-        optimizer.zero_grad()
+
         scaler.scale(loss).backward()
         scaler.step(optimizer)
+        optimizer.zero_grad()
         scaler.update()
         # measure elapsed time
         batch_time.update(time.time() - end)
