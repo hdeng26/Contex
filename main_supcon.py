@@ -18,7 +18,7 @@ from util import TwoCropTransform, AverageMeter, QuadCropTransform
 from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet, LinearClassifier
-from losses import SupConLoss0, SupConLoss1, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3, SupConLossWithQueue, SupConLossWithQueue2
+from losses import SupConLoss0, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3, SupConLossWithQueue, SupConLossWithMemoryBank
 from imagenet32Loader import ImageNetDownSample
 
 #import torch._dynamo
@@ -174,8 +174,8 @@ def parse_option():
     # set the path according to the environment
     if opt.data_folder is None:
         opt.data_folder = './datasets/'
-    opt.model_path = '../ckpts/SupCON/memory/{}_models'.format(opt.dataset)
-    opt.tb_path = '../ckpts/SupCON/memory/{}_tensorboard'.format(opt.dataset)
+    opt.model_path = '../ckpts/SupCON/multi_view/{}_models'.format(opt.dataset)
+    opt.tb_path = '../ckpts/SupCON/multi_view/{}_tensorboard'.format(opt.dataset)
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
@@ -362,9 +362,7 @@ def set_model(opt):
     if opt.loss_type == 0:
         criterion = SupConLoss0(temperature=opt.temp)
     elif opt.loss_type == 1:
-        criterion = SupConLossWithQueue(temperature=opt.temp)
-    elif opt.loss_type == 2:
-        criterion = SupConLossWithQueue2(temperature=opt.temp)
+        criterion = SupConLossWithMemoryBank(temperature=opt.temp)
     elif opt.loss_type == -3:
         criterion = SupConTupletLoss3(temperature=opt.temp, self_weight=opt.self_weight)
     elif opt.loss_type == -2:
@@ -422,6 +420,28 @@ def set_model(opt):
 
     return model, classifier, criterion, linear_criterion
 
+def print_gradients(model):
+    if isinstance(model, (torch.nn.DataParallel)):
+        model = model.module
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            if param.grad is not None:
+                print(f"Gradient for {name}:\n", param.grad)
+            else:
+                print(f"No gradient for {name}")
+
+def print_gradient_summary(model):
+    if isinstance(model, (torch.nn.DataParallel)):
+        model = model.module
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            if param.grad is not None:
+                gradient_magnitude = param.grad.norm().item()
+                print(f"Gradient magnitude for {name}: {gradient_magnitude}")
+            else:
+                print(f"No gradient for {name}")
 
 def train(train_loader, model, criterion, optimizer, epoch, opt):
     """one epoch training"""
@@ -429,6 +449,17 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
     #DDP
     #rank = dist.get_rank()
     #device_id = rank % torch.cuda.device_count()
+    if opt.self_weight == -1:
+        weight_gap = 0.8
+        weight = epoch/opt.epochs * weight_gap + (1 - weight_gap)/2
+        print("current weight: ", weight)
+    elif opt.self_weight == -2:
+        weight_gap = 0.8
+        weight = (1- epoch / opt.epochs) * weight_gap + (1 - weight_gap)/2
+        print("current weight: ", weight)
+    else:
+        weight = opt.self_weight
+
 
     model.train()
     scaler = torch.cuda.amp.GradScaler(enabled=opt.amp)
@@ -466,11 +497,11 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
                 features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
             if opt.method == 'SupCon':
                 if opt.loss_type == 0:
-                    loss = criterion(features, labels)
+                    loss = criterion(features, labels, weight=weight)
                     loss_self = criterion(features)
                     loss_class = loss
                 else:
-                    loss, loss_self, loss_class = criterion(features, labels)
+                    loss, loss_self, loss_class = criterion(features, labels, weight=weight)
 
             elif opt.method == 'SimCLR':
                 loss = criterion(features)
@@ -481,13 +512,13 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
 
         # update metric
         losses.update(loss.item(), bsz)
-
         # SGD
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         optimizer.zero_grad()
         scaler.update()
+
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
@@ -679,7 +710,8 @@ def main():
             logger.log_value('training accuracy', acc, epoch)
             # TODO: change projection to only last epoch
             # eval for one epoch
-            loss, val_top1, val_top5, iteration_step = linear_validate(val_loader, model, classifier, linear_criterion, opt, writer, iteration_step)
+            loss, val_top1, val_top5, iteration_step = linear_validate(
+                val_loader, model, classifier, linear_criterion, opt, writer, iteration_step)
             logger.log_value('testing loss', loss, epoch)
             logger.log_value('testing top 1 accuracy', val_top1, epoch)
             logger.log_value('testing top 5 accuracy', val_top5, epoch)

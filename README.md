@@ -142,3 +142,12 @@ and
     year    = {2020},
 }
 ```
+2023.10.13 Update:
+tried to add feature of moco queue but still not converge
+potential reason 1: too many positive samples caused collapse 
+potential reason 2: unuseful features are leveraged to contrastive (major amount compare to the current batch feature), tested to remove it but not work
+
+analyzing the effectiveness of adaptive lambda (self loss vs label loss)
+1. large self loss to large label loss
+2. large label loss to large self loss
+

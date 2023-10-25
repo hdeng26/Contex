@@ -4,8 +4,10 @@ Date: May 07, 2020
 """
 from __future__ import print_function
 
+import lightly
 import torch
 import torch.nn as nn
+from lightly.loss.memory_bank import MemoryBankModule
 
 class SupConLoss0(nn.Module):
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
@@ -340,7 +342,7 @@ class SupConTupletLoss2(nn.Module):
         self.contrast_mode = contrast_mode
         self.base_temperature = base_temperature
         self.self_weight = self_weight
-    def forward(self, features, labels=None, mask=None):
+    def forward(self, features, labels=None, mask=None, weight=None):
         """Compute loss for model. If both `labels` and `mask` are None,
         it degenerates to SimCLR unsupervised loss:
         https://arxiv.org/pdf/2002.05709.pdf
@@ -356,12 +358,16 @@ class SupConTupletLoss2(nn.Module):
         device = (torch.device('cuda')
                   if features.is_cuda
                   else torch.device('cpu'))
+        if weight is None:
+            weight = self.self_weight
 
         if len(features.shape) < 3:
             raise ValueError('`features` needs to be [bsz, n_views, ...],'
                              'at least 3 dimensions are required')
         if len(features.shape) > 3:
             features = features.view(features.shape[0], features.shape[1], -1)
+        def print_grad(grad):
+            print("Features gradient:", grad.abs().sum().item())
 
         batch_size = features.shape[0]
         if labels is not None and mask is not None:
@@ -435,7 +441,7 @@ class SupConTupletLoss2(nn.Module):
         log_self_diff = logits - torch.log(logits_neg.sum(1, keepdim=True))
         triplet_loss = (sim_mask * log_self_diff).sum(1) / sim_mask.sum(1)
         # loss
-        loss = - (self.temperature / self.base_temperature) * ((1-self.self_weight) * triplet_loss + self.self_weight * mean_log_prob_pos)
+        loss = - (self.temperature / self.base_temperature) * ((1-weight) * triplet_loss + weight * mean_log_prob_pos)
         loss = loss.view(anchor_count, batch_size).mean()
         self_loss = - (self.temperature / self.base_temperature) * triplet_loss
         class_loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
@@ -683,17 +689,28 @@ class SupConLossWithQueue(nn.Module):
         self.queue_size = queue_size
         self.momentum = momentum
 
+        # Create similar feature vectors for the queue
+        # base_vector = torch.rand(128)
+        # std_dev = 0.01
+        # perturbations = torch.randn(queue_size, 128) * std_dev
+        # similar_features = base_vector + perturbations
+        # similar_features = torch.nn.functional.normalize(similar_features, dim=1)
+
         # Initialize the feature queue
         self.register_buffer("feature_queue", torch.randn(queue_size, 128))
-        self.feature_queue = nn.functional.normalize(self.feature_queue, dim=0)
-        self.feature_queue_ptr = 0
+        self.feature_queue = nn.functional.normalize(self.feature_queue, dim=1)
+        self.register_buffer("feature_queue_ptr", torch.zeros(1, dtype=torch.long))
 
-        self.register_buffer("feature_queue2", torch.randn(queue_size, 128))
-        self.feature_queue2 = nn.functional.normalize(self.feature_queue2, dim=0)
-        self.feature_queue2_ptr = 0
+        # perturbations2 = torch.randn(queue_size, 128) * std_dev
+        # similar_features2 = base_vector + perturbations2
+        # similar_features2 = torch.nn.functional.normalize(similar_features2, dim=1)
+
+        self.register_buffer("feature_queue2", torch.randn(queue_size, 128))#torch.randn(queue_size, 128))
+        self.feature_queue2 = nn.functional.normalize(self.feature_queue2, dim=1)
+        self.register_buffer("feature_queue_ptr2", torch.zeros(1, dtype=torch.long))
 
         # Initialize the label queue
-        self.register_buffer("label_queue", torch.empty(queue_size, dtype=torch.long))
+        self.register_buffer("label_queue", torch.arange(start=1e5, end=1e5+queue_size, dtype=torch.long))
         self.label_queue_ptr = 0
 
     def synchronize_queues(self):
@@ -713,37 +730,14 @@ class SupConLossWithQueue(nn.Module):
     def forward(self, features, label=None, mask=None):
         assert features.requires_grad, "Features tensor does not require gradients."
 
+
         # Let's use the first part of the reshaped features for our computations
         features_reshaped = features.view(-1, features.shape[-1])
         feature1, feature2 = features_reshaped.chunk(2, 0)
 
-        # Update feature and label queues
-        with torch.no_grad():
-            batch_size_current = feature1.size(0)
-            # TODO: label need to be qs + feature label
-            if self.feature_queue_ptr + batch_size_current <= self.queue_size:
-                self.feature_queue[self.feature_queue_ptr:self.feature_queue_ptr + batch_size_current] = feature2
-                self.label_queue[self.feature_queue_ptr:self.feature_queue_ptr + batch_size_current] = label
-                self.feature_queue_ptr += batch_size_current
-            else:
-                remaining_space = self.queue_size - self.feature_queue_ptr
-                self.feature_queue[self.feature_queue_ptr:self.feature_queue_ptr + remaining_space] = feature2[:remaining_space]
-                self.feature_queue[:batch_size_current - remaining_space] = feature2[remaining_space:]
-                self.label_queue[self.feature_queue_ptr:self.feature_queue_ptr + remaining_space] = label[:remaining_space]
-                self.label_queue[:batch_size_current - remaining_space] = label[remaining_space:]
-                self.feature_queue_ptr = (self.feature_queue_ptr + batch_size_current) % self.queue_size
-
-            if self.feature_queue2_ptr + batch_size_current <= self.queue_size:
-                self.feature_queue2[
-                self.feature_queue2_ptr:self.feature_queue2_ptr + batch_size_current] = feature1
-                self.feature_queue2_ptr += batch_size_current
-            else:
-                remaining_space = self.queue_size - self.feature_queue2_ptr
-                self.feature_queue2[
-                self.feature_queue2_ptr:self.feature_queue2_ptr + remaining_space] = feature1[
-                                                                                     :remaining_space]
-                self.feature_queue2[:batch_size_current - remaining_space] = feature1[remaining_space:]
-                self.feature_queue2_ptr = (self.feature_queue2_ptr + batch_size_current) % self.queue_size
+        # Normalize the features
+        feature1 = nn.functional.normalize(feature1, dim=1)
+        feature2 = nn.functional.normalize(feature2, dim=1)
 
         device = (torch.device('cuda')
                   if features.is_cuda
@@ -788,31 +782,17 @@ class SupConLossWithQueue(nn.Module):
 
         # tile mask # copy mask and expend
         mask = mask.repeat(anchor_count, contrast_count)
-        # mask-out self-contrast cases (mid ones)
-        # loss 1
-        pos_1d_label = torch.cat((torch.ones(self.queue_size - label.shape[0]), torch.zeros(label.shape[0]*2)))
-        pos_1d_label_src = pos_1d_label.repeat(anchor_count)
+
         logits_self_mask = torch.scatter(
             torch.ones_like(mask),
             1,
             torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
-            pos_1d_label_src.view(-1, 1).to(device),
+            0
         )
 
         logits_mask = torch.square(mask - 1)
 
         mask = mask * logits_self_mask
-
-        #TODO: still not convergence
-        # remove not usefull columns
-        mask = torch.cat((mask[:0], mask[self.queue_size - label.shape[0] + 1:]), dim=0)
-        mask = torch.cat((mask[:batch_size], mask[batch_size + self.queue_size - label.shape[0] + 1:]), dim=0)
-
-        logits = torch.cat((logits[:0], logits[self.queue_size - label.shape[0] + 1:]), dim=0)
-        logits = torch.cat((logits[:batch_size], logits[batch_size + self.queue_size - label.shape[0] + 1:]), dim=0)
-
-        logits_mask = torch.cat((logits_mask[:0], logits_mask[self.queue_size - label.shape[0] + 1:]), dim=0)
-        logits_mask = torch.cat((logits_mask[:batch_size], logits_mask[batch_size + self.queue_size - label.shape[0] + 1:]), dim=0)
 
         # compute log_prob, use exp to range negative logits to [0,1]
         # loss 1
@@ -820,9 +800,12 @@ class SupConLossWithQueue(nn.Module):
 
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
         # torch.maximum(torch.zeros_like(a), a)
-        neg_relu_prob = torch.minimum(torch.zeros_like(log_prob), log_prob)
+        #neg_relu_prob = torch.minimum(torch.zeros_like(log_prob), log_prob)
         # compute mean of log-likelihood over positive
-        mean_log_prob_pos = (mask * neg_relu_prob).sum(1) / mask.sum(1)
+        #mean_log_prob_pos = (mask * neg_relu_prob).sum(1) / mask.sum(1)
+
+        # compute mean of log-likelihood over positive
+        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
         '''
         # TRIPLET LOSS ADVANCE
         # tmp two channel mask
@@ -838,6 +821,7 @@ class SupConLossWithQueue(nn.Module):
         logits_neg = torch.exp(logits) * trip_mask
         log_self_diff = logits - torch.log(logits_neg.sum(1, keepdim=True))
         triplet_loss = (sim_mask * log_self_diff).sum(1) / sim_mask.sum(1)
+        
         # loss
         loss = - (self.temperature / self.base_temperature) * (
                     (1 - self.self_weight) * triplet_loss + self.self_weight * mean_log_prob_pos)
@@ -845,112 +829,85 @@ class SupConLossWithQueue(nn.Module):
         self_loss = - (self.temperature / self.base_temperature) * triplet_loss'''
         class_loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
 
-        assert anchor_dot_contrast.requires_grad, "anchor_dot_contrast does not require gradients."
-        #assert logits.requires_grad, "logits does not require gradients."
-        #assert log_prob.requires_grad, "log_prob does not require gradients."
-        #assert loss.requires_grad, "Loss tensor does not require gradients."
+        with torch.no_grad():
+            batch_size_current = feature1.size(0)
+            # Determine positions in the queue for the new features
+            ptr = self.feature_queue_ptr
+            end_ptr = ptr + batch_size_current
 
+            # If end_ptr exceeds queue_size, wrap around
+            if end_ptr > self.queue_size:
+                self.feature_queue[ptr:] = feature2[:self.queue_size - ptr]
+                self.feature_queue[:end_ptr % self.queue_size] = feature2[self.queue_size - ptr:]
+                self.feature_queue2[ptr:] = feature1[:self.queue_size - ptr]
+                self.feature_queue2[:end_ptr % self.queue_size] = feature1[self.queue_size - ptr:]
+                self.label_queue[ptr:] = label[:self.queue_size - ptr]
+                self.label_queue[:end_ptr % self.queue_size] = label[self.queue_size - ptr:]
+            else:
+                self.feature_queue[ptr:end_ptr] = feature2
+                self.feature_queue2[ptr:end_ptr] = feature1
+                self.label_queue[ptr:end_ptr] = label
+
+            # Update the queue pointer
+            self.feature_queue_ptr = (self.feature_queue_ptr + batch_size_current) % self.queue_size
+
+        assert logits.requires_grad, "logits does not require gradients."
+        assert log_prob.requires_grad, "log_prob does not require gradients."
+        assert class_loss.requires_grad, "Loss tensor does not require gradients."
         self.synchronize_queues()
+
         return class_loss.mean(), class_loss.mean(), class_loss.mean()
 
-class SupConLossWithQueue2(nn.Module):
-    def __init__(self, temperature=0.07, contrast_mode='all', base_temperature=0.07, queue_size=65536, head_dim=128, views=2):
-        super(SupConLossWithQueue2, self).__init__()
+
+class SupConLossWithMemoryBank(nn.Module):
+    def __init__(self, temperature=0.07, bank_size=8192, feature_dim=128, base_temperature=0.07, self_weight=0.5):
+        super(SupConLossWithMemoryBank, self).__init__()
         self.temperature = temperature
-        self.contrast_mode = contrast_mode
         self.base_temperature = base_temperature
-        self.queue_size = queue_size
+        self.self_weight = self_weight
+        self.queue_size = bank_size
 
-        if head_dim != 128:
-            raise NotImplementedError(
-                'head not supported: {}'.format(head_dim))
+        # Initialize three memory banks: for feature_1, feature_2, and labels
+        self.memory_bank_feature_1 = MemoryBankModule(size=bank_size)
+        self.memory_bank_feature_2 = MemoryBankModule(size=bank_size)
+        self.memory_bank_labels = MemoryBankModule(size=bank_size)
 
-        if views != 2:
-            raise NotImplementedError(
-                'views not supported yet: {}'.format(views))
-        # buffer queues
-        self.register_buffer("queue", torch.randn(head_dim, queue_size))
-        #self.register_buffer("queue_2", torch.randn(head_dim, queue_size))
-        self.register_buffer("queue_l", torch.arange(-queue_size, 0).T)
-        self.queue_1 = nn.functional.normalize(self.queue, dim=0)
-        #self.queue_2 = nn.functional.normalize(self.queue_2, dim=0)
-
-    def enqueue_dequeue(self, features, labels):
-        # Enqueue new features and dequeue oldest
-        feature_1 = torch.unbind(features, dim=1)[0]
-        feature_2 = torch.unbind(features, dim=1)[1]
-        self.queue_1 = torch.cat([feature_1, self.queue[:-features.size(0)]], dim=0)
-        #self.queue_2 = torch.cat([feature_2, self.queue[:-features.size(0)]], dim=0)
-        self.queue_label = torch.cat([labels, self.queue[:-labels.size(0)]], dim=0)
-
-    def forward(self, features, labels=None, mask=None):
-        """Compute loss for model. If both `labels` and `mask` are None,
-        it degenerates to SimCLR unsupervised loss:
-        https://arxiv.org/pdf/2002.05709.pdf
-
-        Args:
-            features: hidden vector of shape [bsz, n_views, ...].
-            labels: ground truth of shape [bsz].
-            mask: contrastive mask of shape [bsz, bsz], mask_{i,j}=1 if sample j
-                has the same class as sample i. Can be asymmetric.
-        Returns:
-            A loss scalar.
-        """
-        # Enqueue the current features
-        self.enqueue_dequeue(features, labels)
-        # TODO: add self.queue into contrast
+    def forward(self, features, label=None, mask=None, weight=0.7):
         device = (torch.device('cuda')
                   if features.is_cuda
                   else torch.device('cpu'))
 
-        if len(features.shape) < 3:
-            raise ValueError('`features` needs to be [bsz, n_views, ...],'
-                             'at least 3 dimensions are required')
-        if len(features.shape) > 3:
-            features = features.view(features.shape[0], features.shape[1], -1)
+        features_reshaped = features.view(-1, features.shape[-1])
+        feature1, feature2 = features_reshaped.chunk(2, 0)
 
-        batch_size = features.shape[0]
-        if labels is not None and mask is not None:
-            raise ValueError('Cannot define both `labels` and `mask`')
-        elif labels is None and mask is None:
-            mask = torch.eye(batch_size, dtype=torch.float32).to(device)
-        elif labels is not None:
-            labels = self.queue_label.contiguous().view(-1, 1)
-            if labels.shape[0] != self.queue_size:
-                raise ValueError('Num of labels does not match num of features')
-            mask = torch.eq(labels, labels.T).float().to(device)
-        else:
-            mask = mask.float().to(device)
+        # Update and retrieve from memory banks
+        feature1, stored_feature_1 = self.memory_bank_feature_1.forward(feature1, update=True)
+        feature2, stored_feature_2 = self.memory_bank_feature_2.forward(feature2, update=True)
+        labels, stored_labels = self.memory_bank_labels.forward(label.unsqueeze(1), update=True)
 
+        batch_size = self.queue_size + label.shape[0]
+        labels = torch.cat([stored_labels.contiguous().view(-1, 1), labels.contiguous().view(-1, 1)], dim=0)
+        mask = torch.eq(labels, labels.T).float().to(device)
+
+        # Combine current features and stored features for SupCon loss computation
+        combined_feature_1 = torch.cat([stored_feature_1.T, feature1], dim=0)
+        combined_feature_2 = torch.cat([stored_feature_2.T, feature2], dim=0)
+
+        contrast_feature = torch.cat([combined_feature_1, combined_feature_2], dim=0)
         contrast_count = features.shape[1]
-
-        # add memory tricks
-        self.enqueue_dequeue(features, labels)
-
-        #contrast_feature = torch.cat([self.queue, torch.unbind(features, dim=1)[1]], dim=0)
-        '''
-        if self.contrast_mode == 'one':
-            anchor_feature = features[:, 0]
-            anchor_count = 1
-        elif self.contrast_mode == 'all':
-            anchor_feature = contrast_feature
-            anchor_count = contrast_count
-        else:
-            raise ValueError('Unknown mode: {}'.format(self.contrast_mode))
-        '''
-        # compute logits
+        anchor_feature = contrast_feature
         anchor_count = contrast_count
+
         anchor_dot_contrast = torch.div(
-            torch.matmul(torch.unbind(features, dim=1)[1], self.queue.T),
+            torch.matmul(anchor_feature, contrast_feature.T),
             self.temperature)
+
         # for numerical stability
         logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
         logits = anchor_dot_contrast - logits_max.detach()
 
-        # tile mask # copy mask and expend
-        #mask = mask.repeat(anchor_count, contrast_count)
-        # mask-out self-contrast cases (mid ones)
-        # loss 1
+        # tile mask
+        mask = mask.repeat(anchor_count, contrast_count)
         logits_self_mask = torch.scatter(
             torch.ones_like(mask),
             1,
@@ -958,22 +915,15 @@ class SupConLossWithQueue2(nn.Module):
             0
         )
         logits_mask = torch.square(mask - 1)
-
-        logits_mask_org = logits_self_mask
-        # loss 2 try not remove mid ones in mask
         mask = mask * logits_self_mask
-
-        # compute log_prob, use exp to range negative logits to [0,1]
-        # loss 1
         exp_logits = torch.exp(logits) * logits_mask  # remove all positive pairs
-
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
 
         # compute mean of log-likelihood over positive
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
+        class_loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
 
         # TRIPLET LOSS ADVANCE
-        # tmp two channel mask
         sim_mask = torch.eye(batch_size, dtype=torch.float32).to(device)
         sim_mask = sim_mask.repeat(anchor_count, contrast_count)
         sim_mask = sim_mask * logits_self_mask
@@ -986,10 +936,12 @@ class SupConLossWithQueue2(nn.Module):
         logits_neg = torch.exp(logits) * trip_mask
         log_self_diff = logits - torch.log(logits_neg.sum(1, keepdim=True))
         triplet_loss = (sim_mask * log_self_diff).sum(1) / sim_mask.sum(1)
+
         # loss
-        loss = - (self.temperature / self.base_temperature) * (triplet_loss + mean_log_prob_pos) / 2
+        loss = - (self.temperature / self.base_temperature) * (
+                    (1 - self.self_weight) * triplet_loss + self.self_weight * mean_log_prob_pos)
         loss = loss.view(anchor_count, batch_size).mean()
         self_loss = - (self.temperature / self.base_temperature) * triplet_loss
         class_loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
-        return loss, self_loss.view(anchor_count, batch_size).mean(), class_loss.view(anchor_count, batch_size).mean()
-
+        return (self_loss.view(anchor_count, batch_size).mean(), self_loss.view(anchor_count, batch_size).mean(),
+                self_loss.view(anchor_count, batch_size).mean())
