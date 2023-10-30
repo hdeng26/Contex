@@ -14,11 +14,11 @@ import random
 import torch.backends.cudnn as cudnn
 from torchvision import transforms, datasets
 from util import adjust_learning_rate, warmup_learning_rate, accuracy, accuracy_per_class
-from util import TwoCropTransform, AverageMeter, QuadCropTransform
+from util import TwoCropTransform, AverageMeter, QuadCropTransform, TriCropTransform
 from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet, LinearClassifier
-from losses import SupConLoss0, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3, SupConLossWithQueue, SupConLossWithMemoryBank
+from losses import SupConLoss0, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3, SupConTupletLossSplit, SupConLossWithMemoryBank
 from imagenet32Loader import ImageNetDownSample
 
 #import torch._dynamo
@@ -302,6 +302,44 @@ def set_loader(opt):
                                                transform=val_transform_imagenet)
         else:
             raise ValueError(opt.dataset)
+    elif opt.num_chan == 3:
+        if opt.dataset == 'cifar10':
+            train_dataset = datasets.CIFAR10(root=opt.data_folder,
+                                             transform=TriCropTransform(train_transform),
+                                             download=True)
+            linear_train_dataset = datasets.CIFAR10(root=opt.data_folder,
+                                                    transform=linear_train_transform,
+                                                    download=True)
+            val_dataset = datasets.CIFAR10(root=opt.data_folder,
+                                           train=False,
+                                           transform=val_transform)
+        elif opt.dataset == 'cifar100':
+            train_dataset = datasets.CIFAR100(root=opt.data_folder,
+                                              transform=TriCropTransform(train_transform),
+                                              download=True)
+            linear_train_dataset = datasets.CIFAR100(root=opt.data_folder,
+                                                     transform=linear_train_transform,
+                                                     download=True)
+            val_dataset = datasets.CIFAR100(root=opt.data_folder,
+                                            train=False,
+                                            transform=val_transform)
+        elif opt.dataset == 'imagenet32':
+            train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
+                                               transform=TriCropTransform(train_transform))
+            linear_train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
+                                                      transform=linear_train_transform)
+            val_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_val',
+                                             train=False,
+                                             transform=val_transform)
+        elif opt.dataset == 'path':
+            train_dataset = datasets.ImageFolder(root=opt.data_folder + "Training_set",
+                                                 transform=TriCropTransform(train_transform))
+            linear_train_dataset = datasets.ImageFolder(root=opt.data_folder + "Training_set",
+                                                        transform=linear_train_transform)
+            val_dataset = datasets.ImageFolder(root=opt.data_folder + "Validation_set",
+                                               transform=val_transform_imagenet)
+        else:
+            raise ValueError(opt.dataset)
     else:
         if opt.dataset == 'cifar10':
             train_dataset = datasets.CIFAR10(root=opt.data_folder,
@@ -359,6 +397,8 @@ def set_loader(opt):
 def set_model(opt):
     model = SupConResNet(name=opt.model)
     linear_criterion = torch.nn.CrossEntropyLoss()
+    if opt.num_chan == 3:
+        assert opt.loss_type == 3
     if opt.loss_type == 0:
         criterion = SupConLoss0(temperature=opt.temp)
     elif opt.loss_type == 1:
@@ -369,6 +409,8 @@ def set_model(opt):
         criterion = SupConTupletLoss2(temperature=opt.temp, self_weight=opt.self_weight)
     elif opt.loss_type == -1:
         criterion = SupConTupletLoss(temperature=opt.temp)
+    elif opt.loss_type == 3:
+        criterion = SupConTupletLossSplit(temperature=opt.temp, self_weight=0.5)
 
     else:
         print("Error finding loss function\n")
@@ -472,6 +514,8 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         data_time.update(time.time() - end)
         if opt.num_chan == 4:
             images = torch.cat([images[0], images[1], images[2], images[3]], dim=0)
+        elif opt.num_chan == 3:
+            images = torch.cat([images[0], images[1], images[2]], dim=0)
         else:
             images = torch.cat([images[0], images[1]], dim=0)
         if torch.cuda.is_available():
@@ -488,10 +532,13 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         # compute loss
         with torch.cuda.amp.autocast(enabled=opt.amp):
             features = model(images)
-            # TODO: change to 4 features
+
             if opt.num_chan == 4:
                 f1, f2, f3, f4 = torch.split(features, [bsz, bsz, bsz, bsz], dim=0)
                 features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1), f3.unsqueeze(1), f4.unsqueeze(1)], dim=1)
+            if opt.num_chan == 3:
+                f1, f2, f3 = torch.split(features, [bsz, bsz, bsz], dim=0)
+                features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1), f3.unsqueeze(1)], dim=1)
             else:
                 f1, f2 = torch.split(features, [bsz, bsz], dim=0)
                 features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
@@ -501,7 +548,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
                     loss_self = criterion(features)
                     loss_class = loss
                 else:
-                    loss, loss_self, loss_class = criterion(features, labels, weight=weight)
+                    loss, loss_self, loss_class = criterion(features, labels)
 
             elif opt.method == 'SimCLR':
                 loss = criterion(features)
