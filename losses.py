@@ -1,10 +1,9 @@
 
 from __future__ import print_function
 
-import lightly
 import torch
 import torch.nn as nn
-from lightly.loss.memory_bank import MemoryBankModule
+from memory_bank import MemoryBankModule
 
 class SupConLoss0(nn.Module):
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.

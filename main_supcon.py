@@ -544,7 +544,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
                 features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
             if opt.method == 'SupCon':
                 if opt.loss_type == 0:
-                    loss = criterion(features, labels, weight=weight)
+                    loss = criterion(features, labels)
                     loss_self = criterion(features)
                     loss_class = loss
                 else:
