@@ -6,30 +6,16 @@ import torch
 import torch.optim as optim
 
 
-class TwoCropTransform:
-    """Create two crops of the same image"""
-    def __init__(self, transform):
-        self.transform = transform
-
-    def __call__(self, x):
-        return [self.transform(x), self.transform(x)]
-
-class TriCropTransform:
+class MultiCropTransform:
     """Create two crops of the same image"""
 
-    def __init__(self, transform):
+    def __init__(self, transform, num_chan):
         self.transform = transform
+        self.num_chan = num_chan
 
     def __call__(self, x):
-        return [self.transform(x), self.transform(x), self.transform(x)]
+        return [self.transform(x)] * self.num_chan
 
-class QuadCropTransform:
-    """Create two crops of the same image"""
-    def __init__(self, transform):
-        self.transform = transform
-
-    def __call__(self, x):
-        return [self.transform(x), self.transform(x), self.transform(x), self.transform(x)]
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""

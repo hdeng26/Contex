@@ -14,7 +14,7 @@ import random
 import torch.backends.cudnn as cudnn
 from torchvision import transforms, datasets
 from util import adjust_learning_rate, warmup_learning_rate, accuracy, accuracy_per_class
-from util import TwoCropTransform, AverageMeter, QuadCropTransform, TriCropTransform
+from util import MultiCropTransform, AverageMeter
 from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet, LinearClassifier
@@ -264,120 +264,45 @@ def set_loader(opt):
         transforms.ToTensor(),
         normalize,
     ])
-    if opt.num_chan == 4:
-        if opt.dataset == 'cifar10':
-            train_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                             transform=QuadCropTransform(train_transform),
-                                             download=True)
-            linear_train_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                                    transform=linear_train_transform,
-                                                    download=True)
-            val_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                           train=False,
-                                           transform=val_transform)
-        elif opt.dataset == 'cifar100':
-            train_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                              transform=QuadCropTransform(train_transform),
-                                              download=True)
-            linear_train_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                                     transform=linear_train_transform,
-                                                     download=True)
-            val_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                            train=False,
-                                            transform=val_transform)
-        elif opt.dataset == 'imagenet32':
-            train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
-                                               transform=QuadCropTransform(train_transform))
-            linear_train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
-                                                      transform=linear_train_transform)
-            val_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_val',
-                                             train=False,
-                                             transform=val_transform)
-        elif opt.dataset == 'path':
-            train_dataset = datasets.ImageFolder(root=opt.data_folder + "Training_set",
-                                                 transform=QuadCropTransform(train_transform))
-            linear_train_dataset = datasets.ImageFolder(root=opt.data_folder + "Training_set",
-                                                        transform=linear_train_transform)
-            val_dataset = datasets.ImageFolder(root=opt.data_folder + "Validation_set",
-                                               transform=val_transform_imagenet)
-        else:
-            raise ValueError(opt.dataset)
-    elif opt.num_chan == 3:
-        if opt.dataset == 'cifar10':
-            train_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                             transform=TriCropTransform(train_transform),
-                                             download=True)
-            linear_train_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                                    transform=linear_train_transform,
-                                                    download=True)
-            val_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                           train=False,
-                                           transform=val_transform)
-        elif opt.dataset == 'cifar100':
-            train_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                              transform=TriCropTransform(train_transform),
-                                              download=True)
-            linear_train_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                                     transform=linear_train_transform,
-                                                     download=True)
-            val_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                            train=False,
-                                            transform=val_transform)
-        elif opt.dataset == 'imagenet32':
-            train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
-                                               transform=TriCropTransform(train_transform))
-            linear_train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
-                                                      transform=linear_train_transform)
-            val_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_val',
-                                             train=False,
-                                             transform=val_transform)
-        elif opt.dataset == 'path':
-            train_dataset = datasets.ImageFolder(root=opt.data_folder + "Training_set",
-                                                 transform=TriCropTransform(train_transform))
-            linear_train_dataset = datasets.ImageFolder(root=opt.data_folder + "Training_set",
-                                                        transform=linear_train_transform)
-            val_dataset = datasets.ImageFolder(root=opt.data_folder + "Validation_set",
-                                               transform=val_transform_imagenet)
-        else:
-            raise ValueError(opt.dataset)
+
+    if opt.dataset == 'cifar10':
+        train_dataset = datasets.CIFAR10(root=opt.data_folder,
+                                         transform=MultiCropTransform(train_transform, opt.num_chan),
+                                         download=True)
+        linear_train_dataset = datasets.CIFAR10(root=opt.data_folder,
+                                                transform=linear_train_transform,
+                                                download=True)
+        val_dataset = datasets.CIFAR10(root=opt.data_folder,
+                                       train=False,
+                                       transform=val_transform)
+    elif opt.dataset == 'cifar100':
+        train_dataset = datasets.CIFAR100(root=opt.data_folder,
+                                          transform=MultiCropTransform(train_transform, opt.num_chan),
+                                          download=True)
+        linear_train_dataset = datasets.CIFAR100(root=opt.data_folder,
+                                                 transform=linear_train_transform,
+                                                 download=True)
+        val_dataset = datasets.CIFAR100(root=opt.data_folder,
+                                        train=False,
+                                        transform=val_transform)
+    elif opt.dataset == 'imagenet32':
+        train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
+                                           transform=MultiCropTransform(train_transform, opt.num_chan),)
+        linear_train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
+                                                  transform=linear_train_transform)
+        val_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_val',
+                                         train=False,
+                                         transform=val_transform)
+    elif opt.dataset == 'path':
+        train_dataset = datasets.ImageFolder(root=opt.data_folder + "Training_set",
+                                             transform=MultiCropTransform(train_transform, opt.num_chan),)
+        linear_train_dataset = datasets.ImageFolder(root=opt.data_folder + "Training_set",
+                                                    transform=linear_train_transform)
+        val_dataset = datasets.ImageFolder(root=opt.data_folder + "Validation_set",
+                                           transform=val_transform_imagenet)
     else:
-        if opt.dataset == 'cifar10':
-            train_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                             transform=TwoCropTransform(train_transform),
-                                             download=True)
-            linear_train_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                                    transform=linear_train_transform,
-                                                    download=True)
-            val_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                           train=False,
-                                           transform=val_transform)
-        elif opt.dataset == 'cifar100':
-            train_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                              transform=TwoCropTransform(train_transform),
-                                              download=True)
-            linear_train_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                                     transform=linear_train_transform,
-                                                     download=True)
-            val_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                            train=False,
-                                            transform=val_transform)
-        elif opt.dataset == 'imagenet32':
-            train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
-                                               transform=TwoCropTransform(train_transform))
-            linear_train_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_train',
-                                                      transform=linear_train_transform)
-            val_dataset = ImageNetDownSample(root='/data/Dataset/ImageNet_32/Imagenet32_val',
-                                             train=False,
-                                             transform=val_transform)
-        elif opt.dataset == 'path':
-            train_dataset = datasets.ImageFolder(root=opt.data_folder + "Training_set",
-                                                 transform=TwoCropTransform(train_transform))
-            linear_train_dataset = datasets.ImageFolder(root=opt.data_folder + "Training_set",
-                                                        transform=linear_train_transform)
-            val_dataset = datasets.ImageFolder(root=opt.data_folder + "Validation_set",
-                                               transform=val_transform_imagenet)
-        else:
-            raise ValueError(opt.dataset)
+        raise ValueError(opt.dataset)
+
 
 
 
@@ -512,12 +437,9 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
     end = time.time()
     for idx, (images, labels) in enumerate(train_loader):
         data_time.update(time.time() - end)
-        if opt.num_chan == 4:
-            images = torch.cat([images[0], images[1], images[2], images[3]], dim=0)
-        elif opt.num_chan == 3:
-            images = torch.cat([images[0], images[1], images[2]], dim=0)
-        else:
-            images = torch.cat([images[0], images[1]], dim=0)
+        # concat the images
+        images = torch.cat(images, dim=0)
+
         if torch.cuda.is_available():
             #ddp
             #images = images.to(device_id)
@@ -533,15 +455,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         with torch.cuda.amp.autocast(enabled=opt.amp):
             features = model(images)
 
-            if opt.num_chan == 4:
-                f1, f2, f3, f4 = torch.split(features, [bsz, bsz, bsz, bsz], dim=0)
-                features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1), f3.unsqueeze(1), f4.unsqueeze(1)], dim=1)
-            if opt.num_chan == 3:
-                f1, f2, f3 = torch.split(features, [bsz, bsz, bsz], dim=0)
-                features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1), f3.unsqueeze(1)], dim=1)
-            else:
-                f1, f2 = torch.split(features, [bsz, bsz], dim=0)
-                features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
+            features = torch.cat([c.unsqueeze(1) for c in torch.split(features, bsz, dim=0)], dim=1)
             if opt.method == 'SupCon':
                 if opt.loss_type == 0:
                     loss = criterion(features, labels)
