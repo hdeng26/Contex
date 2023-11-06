@@ -467,6 +467,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
             elif opt.method == 'SimCLR':
                 loss = criterion(features)
                 loss_self = loss
+                loss_class = loss
             else:
                 raise ValueError('contrastive method not supported: {}'.
                                  format(opt.method))
