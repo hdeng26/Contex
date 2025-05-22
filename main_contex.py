@@ -15,7 +15,7 @@ from util import TwoCropTransform, AverageMeter, QuadCropTransform
 from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet, LinearClassifier
-from losses import SupConLoss0, SupConLoss1, SupConTupletLoss, SupConTupletLoss2, SupConTupletLoss3
+from losses import supcon, contex
 from imagenet32Loader import ImageNetDownSample
 
 #import torch._dynamo
@@ -327,13 +327,8 @@ def set_model(opt):
     if opt.loss_type == 0:
         criterion = SupConLoss0(temperature=opt.temp)
     elif opt.loss_type == 1:
-        criterion = SupConLoss1(temperature=opt.temp)
-    elif opt.loss_type == -3:
-        criterion = SupConTupletLoss3(temperature=opt.temp)
-    elif opt.loss_type == -2:
-        criterion = SupConTupletLoss2(temperature=opt.temp)
-    elif opt.loss_type == -1:
-        criterion = SupConTupletLoss(temperature=opt.temp)
+        criterion = contex(temperature=opt.temp)
+
     else:
         print("Error finding loss function\n")
     # enable synchronized Batch Normalization

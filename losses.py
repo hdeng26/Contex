@@ -7,7 +7,7 @@ from __future__ import print_function
 import torch
 import torch.nn as nn
 
-class SupConLoss0(nn.Module):
+class supcon(nn.Module):
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
     It also supports the unsupervised contrastive loss in SimCLR"""
     def __init__(self, temperature=0.07, contrast_mode='all',
@@ -197,7 +197,7 @@ class SupConLoss1(nn.Module):
 
         return loss
 
-class SupConTupletLoss(nn.Module):
+class contex_p(nn.Module):
     # remove the part positive samples from negative calculation
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
     It also supports the unsupervised contrastive loss in SimCLR"""
@@ -308,7 +308,7 @@ class SupConTupletLoss(nn.Module):
         loss = loss.view(anchor_count, batch_size).mean()
         return loss
 
-class SupConTupletLoss2(nn.Module):
+class contex(nn.Module):
     # remove the part positive samples from negative calculation
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
     It also supports the unsupervised contrastive loss in SimCLR"""
@@ -418,7 +418,7 @@ class SupConTupletLoss2(nn.Module):
         loss = loss.view(anchor_count, batch_size).mean()
         return loss
 
-class SupConTupletLoss3(nn.Module):
+class contex_2(nn.Module):
     # re-orgnize the loss function and run
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
     It also supports the unsupervised contrastive loss in SimCLR"""
